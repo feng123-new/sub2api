@@ -365,6 +365,62 @@ func TestLoadDefaultSchedulingConfig(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultContextPreflightConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "off", cfg.Gateway.ContextPreflight.Mode)
+	require.Equal(t, 0.90, cfg.Gateway.ContextPreflight.Threshold)
+	require.Empty(t, cfg.Gateway.ContextPreflight.Models)
+}
+
+func TestLoadContextPreflightConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	viper.Set("gateway.context_preflight.mode", " Shadow ")
+	viper.Set("gateway.context_preflight.threshold", 0.95)
+	viper.Set("gateway.context_preflight.models", []string{" GPT-5.5 ", "O3"})
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "shadow", cfg.Gateway.ContextPreflight.Mode)
+	require.Equal(t, 0.95, cfg.Gateway.ContextPreflight.Threshold)
+	require.Equal(t, []string{"gpt-5.5", "o3"}, cfg.Gateway.ContextPreflight.Models)
+}
+
+func TestValidateContextPreflightConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  GatewayContextPreflightConfig
+		wantErr string
+	}{
+		{name: "off at minimum threshold", config: GatewayContextPreflightConfig{Mode: "off", Threshold: 0.50}},
+		{name: "shadow", config: GatewayContextPreflightConfig{Mode: "shadow", Threshold: 0.90}},
+		{name: "enforce below maximum threshold", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: 0.9999}},
+		{name: "invalid mode", config: GatewayContextPreflightConfig{Mode: "observe", Threshold: 0.90}, wantErr: "gateway.context_preflight.mode"},
+		{name: "threshold below range", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: 0.4999}, wantErr: "gateway.context_preflight.threshold"},
+		{name: "threshold at maximum", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: 1.00}, wantErr: "gateway.context_preflight.threshold"},
+		{name: "threshold above maximum", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: 1.01}, wantErr: "gateway.context_preflight.threshold"},
+		{name: "threshold is NaN", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: math.NaN()}, wantErr: "gateway.context_preflight.threshold"},
+		{name: "threshold is positive infinity", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: math.Inf(1)}, wantErr: "gateway.context_preflight.threshold"},
+		{name: "threshold is negative infinity", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: math.Inf(-1)}, wantErr: "gateway.context_preflight.threshold"},
+		{name: "empty model entry", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: 0.90, Models: []string{""}}, wantErr: "gateway.context_preflight.models"},
+		{name: "whitespace model entry", config: GatewayContextPreflightConfig{Mode: "enforce", Threshold: 0.90, Models: []string{"gpt-5.5", " \t "}}, wantErr: "gateway.context_preflight.models"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			cfg, err := Load()
+			require.NoError(t, err)
+			cfg.Gateway.ContextPreflight = tt.config
+			err = cfg.Validate()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestLoadDefaultOpenAIFirstOutputTimeoutsDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 

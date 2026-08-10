@@ -283,7 +283,7 @@
                       d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
                     />
                   </svg>
-                  <span>{{ formatResetTime(row.weekly_window_start, 'weekly') }}</span>
+                  <span>{{ formatResetTime(row.weekly_window_start, 'weekly', row.weekly_resets_at) }}</span>
                 </div>
               </div>
 
@@ -320,7 +320,7 @@
                       d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
                     />
                   </svg>
-                  <span>{{ formatResetTime(row.monthly_window_start, 'monthly') }}</span>
+                  <span>{{ formatResetTime(row.monthly_window_start, 'monthly', row.monthly_resets_at) }}</span>
                 </div>
               </div>
 
@@ -400,6 +400,14 @@
               >
                 <Icon name="refresh" size="sm" />
                 <span class="text-xs">{{ t('admin.subscriptions.resetQuota') }}</span>
+              </button>
+              <button
+                v-if="row.status === 'active'"
+                @click="handleScheduleQuotaReset(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
+              >
+                <Icon name="calendar" size="sm" />
+                <span class="text-xs">{{ t('admin.subscriptions.resetTime') }}</span>
               </button>
               <button
                 v-if="row.status === 'active'"
@@ -679,6 +687,78 @@
       @confirm="confirmResetQuota"
       @cancel="showResetQuotaConfirm = false"
     />
+
+    <BaseDialog
+      :show="showScheduleResetModal"
+      :title="t('admin.subscriptions.resetTimeTitle')"
+      width="narrow"
+      @close="closeScheduleResetModal"
+    >
+      <form
+        v-if="schedulingSubscription"
+        id="schedule-quota-reset-form"
+        class="space-y-5"
+        @submit.prevent="confirmScheduleQuotaReset"
+      >
+        <div>
+          <label class="input-label">{{ t('admin.subscriptions.form.resetWindows') }}</label>
+          <div class="grid grid-cols-3 gap-3">
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                v-model="resetTimeForm.daily"
+                type="checkbox"
+                :disabled="schedulingSubscription.group?.daily_limit_usd == null"
+                class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              {{ t('admin.subscriptions.daily') }}
+            </label>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                v-model="resetTimeForm.weekly"
+                type="checkbox"
+                :disabled="schedulingSubscription.group?.weekly_limit_usd == null"
+                class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              {{ t('admin.subscriptions.weekly') }}
+            </label>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                v-model="resetTimeForm.monthly"
+                type="checkbox"
+                :disabled="schedulingSubscription.group?.monthly_limit_usd == null"
+                class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+              />
+              {{ t('admin.subscriptions.monthly') }}
+            </label>
+          </div>
+        </div>
+        <div>
+          <label class="input-label">{{ t('admin.subscriptions.form.nextResetTime') }}</label>
+          <input
+            v-model="resetTimeForm.reset_at"
+            type="datetime-local"
+            required
+            :min="minimumResetTime"
+            class="input"
+          />
+        </div>
+      </form>
+      <template #footer>
+        <div v-if="schedulingSubscription" class="flex justify-end gap-3">
+          <button type="button" class="btn btn-secondary" @click="closeScheduleResetModal">
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="submit"
+            form="schedule-quota-reset-form"
+            :disabled="schedulingReset"
+            class="btn btn-primary"
+          >
+            {{ schedulingReset ? t('common.saving') : t('common.save') }}
+          </button>
+        </div>
+      </template>
+    </BaseDialog>
     <!-- Subscription Guide Modal -->
     <teleport to="body">
       <transition name="modal">
@@ -769,7 +849,7 @@ import { adminAPI } from '@/api/admin'
 import type { UserSubscription, Group, GroupPlatform, SubscriptionType } from '@/types'
 import type { SimpleUser } from '@/api/admin/usage'
 import type { Column } from '@/components/common/types'
-import { formatDateTimeToMinute } from '@/utils/format'
+import { formatDateTimeLocalInput, formatDateTimeToMinute } from '@/utils/format'
 import { getPersistedPageSize } from '@/composables/usePersistedPageSize'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
@@ -807,6 +887,7 @@ const showGuideModal = ref(false)
 const guideActionRows = computed(() => [
   { action: t('admin.subscriptions.guide.actions.adjust'), desc: t('admin.subscriptions.guide.actions.adjustDesc') },
   { action: t('admin.subscriptions.guide.actions.resetQuota'), desc: t('admin.subscriptions.guide.actions.resetQuotaDesc') },
+  { action: t('admin.subscriptions.guide.actions.resetTime'), desc: t('admin.subscriptions.guide.actions.resetTimeDesc') },
   { action: t('admin.subscriptions.guide.actions.revoke'), desc: t('admin.subscriptions.guide.actions.revokeDesc') }
 ])
 
@@ -874,13 +955,19 @@ const loadSavedColumns = () => {
     const saved = localStorage.getItem(HIDDEN_COLUMNS_KEY)
     if (saved) {
       const parsed = JSON.parse(saved) as string[]
-      parsed.forEach(key => hiddenColumns.add(key))
+      parsed.forEach((key) => {
+        hiddenColumns.add(key)
+      })
     } else {
-      DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
+      DEFAULT_HIDDEN_COLUMNS.forEach((key) => {
+        hiddenColumns.add(key)
+      })
     }
   } catch (e) {
     console.error('Failed to load saved columns:', e)
-    DEFAULT_HIDDEN_COLUMNS.forEach(key => hiddenColumns.add(key))
+    DEFAULT_HIDDEN_COLUMNS.forEach((key) => {
+      hiddenColumns.add(key)
+    })
   }
 }
 
@@ -971,9 +1058,12 @@ const showExtendModal = ref(false)
 const showRevokeDialog = ref(false)
 const showRestoreDialog = ref(false)
 const showResetQuotaConfirm = ref(false)
+const showScheduleResetModal = ref(false)
 const submitting = ref(false)
 const resettingSubscription = ref<UserSubscription | null>(null)
 const resettingQuota = ref(false)
+const schedulingSubscription = ref<UserSubscription | null>(null)
+const schedulingReset = ref(false)
 const extendingSubscription = ref<UserSubscription | null>(null)
 const revokingSubscription = ref<UserSubscription | null>(null)
 const restoringSubscription = ref<UserSubscription | null>(null)
@@ -987,6 +1077,22 @@ const assignForm = reactive({
 const extendForm = reactive({
   days: 30
 })
+
+const resetTimeForm = reactive({
+  daily: true,
+  weekly: false,
+  monthly: false,
+  reset_at: ''
+})
+
+const minimumResetTime = computed(() =>
+  formatDateTimeLocalInput(Math.floor(Date.now() / 1000) + 60)
+)
+const serverTimezone = computed(() =>
+  appStore.cachedPublicSettings?.server_timezone
+    || Intl.DateTimeFormat().resolvedOptions().timeZone
+    || 'UTC'
+)
 
 // Group options for filter (all groups)
 const groupOptions = computed(() => [
@@ -1335,6 +1441,95 @@ const confirmResetQuota = async () => {
   }
 }
 
+const resetTimeInputFor = (subscription: UserSubscription): string => {
+  const candidates = [
+    subscription.daily_resets_at,
+    subscription.weekly_resets_at,
+    subscription.monthly_resets_at
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => new Date(value))
+    .filter((value) => !Number.isNaN(value.getTime()) && value.getTime() > Date.now())
+
+  const resetAt = candidates.sort((left, right) => left.getTime() - right.getTime())[0]
+    ?? new Date(Date.now() + 24 * 60 * 60 * 1000)
+  return formatDateTimeLocalInput(Math.floor(resetAt.getTime() / 1000))
+}
+
+const isServerMidnight = (value: Date): boolean => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: serverTimezone.value,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(value)
+    const time = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+    return time.hour === '00' && time.minute === '00' && time.second === '00'
+  } catch {
+    return value.getHours() === 0 && value.getMinutes() === 0 && value.getSeconds() === 0
+  }
+}
+
+const handleScheduleQuotaReset = (subscription: UserSubscription) => {
+  schedulingSubscription.value = subscription
+  const hasDaily = subscription.group?.daily_limit_usd != null
+  const hasWeekly = subscription.group?.weekly_limit_usd != null
+  const hasMonthly = subscription.group?.monthly_limit_usd != null
+  resetTimeForm.daily = hasDaily
+  resetTimeForm.weekly = !hasDaily && hasWeekly
+  resetTimeForm.monthly = !hasDaily && !hasWeekly && hasMonthly
+  resetTimeForm.reset_at = resetTimeInputFor(subscription)
+  showScheduleResetModal.value = true
+}
+
+const closeScheduleResetModal = () => {
+  showScheduleResetModal.value = false
+  schedulingSubscription.value = null
+}
+
+const confirmScheduleQuotaReset = async () => {
+  const subscription = schedulingSubscription.value
+  if (!subscription || schedulingReset.value) return
+  if (!resetTimeForm.daily && !resetTimeForm.weekly && !resetTimeForm.monthly) {
+    appStore.showError(t('admin.subscriptions.pleaseSelectResetWindow'))
+    return
+  }
+
+  const resetAt = new Date(resetTimeForm.reset_at)
+  if (Number.isNaN(resetAt.getTime()) || resetAt.getTime() <= Date.now()) {
+    appStore.showError(t('admin.subscriptions.resetTimeMustBeFuture'))
+    return
+  }
+  if (subscription.expires_at && resetAt.getTime() >= new Date(subscription.expires_at).getTime()) {
+    appStore.showError(t('admin.subscriptions.resetTimeBeforeExpiry'))
+    return
+  }
+  if (resetTimeForm.daily && !isServerMidnight(resetAt)) {
+    appStore.showError(t('admin.subscriptions.dailyResetTimeMustBeMidnight', { timezone: serverTimezone.value }))
+    return
+  }
+
+  schedulingReset.value = true
+  try {
+    await adminAPI.subscriptions.scheduleQuotaReset(subscription.id, {
+      daily: resetTimeForm.daily,
+      weekly: resetTimeForm.weekly,
+      monthly: resetTimeForm.monthly,
+      reset_at: resetAt.toISOString()
+    })
+    appStore.showSuccess(t('admin.subscriptions.resetTimeSaved'))
+    closeScheduleResetModal()
+    await loadSubscriptions()
+  } catch (error: any) {
+    appStore.showError(error.response?.data?.detail || t('admin.subscriptions.failedToSaveResetTime'))
+    console.error('Error scheduling quota reset:', error)
+  } finally {
+    schedulingReset.value = false
+  }
+}
+
 // Helper functions
 const getDaysRemaining = (expiresAt: string): number | null => {
   const now = new Date()
@@ -1410,28 +1605,29 @@ const formatDailyUsageWindow = (subscription: UserSubscription): string => {
     return parts ? formatQuotaEndDuration(parts) : t('admin.subscriptions.windowNotActive')
   }
 
-  return formatResetTime(subscription.daily_window_start, 'daily')
+  return formatResetTime(subscription.daily_window_start, 'daily', subscription.daily_resets_at)
 }
 
 // Format reset time based on window start and period type
-const formatResetTime = (windowStart: string | null, period: 'daily' | 'weekly' | 'monthly'): string => {
+const formatResetTime = (
+  windowStart: string | null,
+  period: 'daily' | 'weekly' | 'monthly',
+  resetsAt?: string | null
+): string => {
   if (!windowStart) return t('admin.subscriptions.windowNotActive')
 
   const start = new Date(windowStart)
   const now = new Date()
 
   // Calculate reset time based on period
-  let resetTime: Date
-  switch (period) {
-    case 'daily':
-      resetTime = new Date(start.getTime() + 24 * 60 * 60 * 1000)
-      break
-    case 'weekly':
-      resetTime = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000)
-      break
-    case 'monthly':
-      resetTime = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000)
-      break
+  let resetTime = resetsAt ? new Date(resetsAt) : new Date(Number.NaN)
+  if (Number.isNaN(resetTime.getTime())) {
+    const periodMs = period === 'daily'
+      ? 24 * 60 * 60 * 1000
+      : period === 'weekly'
+        ? 7 * 24 * 60 * 60 * 1000
+        : 30 * 24 * 60 * 60 * 1000
+    resetTime = new Date(start.getTime() + periodMs)
   }
 
   const parts = getRemainingDurationParts(resetTime, now)
@@ -1452,6 +1648,7 @@ const handleClickOutside = (event: MouseEvent) => {
 onMounted(() => {
   loadUserColumnMode()
   loadSavedColumns()
+  void appStore.fetchPublicSettings()
   loadSubscriptions()
   loadGroups()
   document.addEventListener('click', handleClickOutside)

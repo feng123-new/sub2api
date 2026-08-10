@@ -29,6 +29,31 @@ func TestOpenAIGatewayHandlerResponses_GrokResponsesLiteImageToolDeclarationBypa
 	require.NotContains(t, rec.Body.String(), service.ImageGenerationPermissionMessage())
 }
 
+func TestOpenAIGatewayHandlerResponses_OpenAIOptionalImageDeclarationsBypassPermissionGate(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "passive top-level image namespace",
+			body: `{"model":"gpt-5.5","tools":[{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]}],"tool_choice":"auto","input":"write code"}`,
+		},
+		{
+			name: "Responses Lite additional tools namespace",
+			body: `{"model":"gpt-5.5","tool_choice":"auto","input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]}]},{"type":"message","role":"user","content":"write code"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := runOpenAIResponsesImagePermissionGateTest(t, service.PlatformOpenAI, tt.body)
+
+			require.NotEqual(t, http.StatusForbidden, rec.Code)
+			require.NotContains(t, rec.Body.String(), service.ImageGenerationPermissionMessage())
+		})
+	}
+}
+
 func TestOpenAIGatewayHandlerResponses_ImagePermissionHardSignalsStillRejected(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -48,7 +73,17 @@ func TestOpenAIGatewayHandlerResponses_ImagePermissionHardSignalsStillRejected(t
 		{
 			name:     "OpenAI native image_generation tool",
 			platform: service.PlatformOpenAI,
-			body:     `{"model":"gpt-5.5","tools":[{"type":"image_generation","model":"gpt-image-2"}],"input":"draw a cat"}`,
+			body:     `{"model":"gpt-5.5","tools":[{"type":"image_generation","model":"gpt-image-2"},{"type":"function","name":"lookup"}],"tool_choice":"auto","input":"draw a cat"}`,
+		},
+		{
+			name:     "OpenAI explicit image tool choice",
+			platform: service.PlatformOpenAI,
+			body:     `{"model":"gpt-5.5","tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"},"input":"draw"}`,
+		},
+		{
+			name:     "OpenAI image-only required choice",
+			platform: service.PlatformOpenAI,
+			body:     `{"model":"gpt-5.5","input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"}]}],"tool_choice":"required"}`,
 		},
 		{
 			name:     "OpenAI image model",
@@ -67,12 +102,30 @@ func TestOpenAIGatewayHandlerResponses_ImagePermissionHardSignalsStillRejected(t
 	}
 }
 
-func TestOpenAIGatewayHandlerResponses_PassiveNamespaceDoesNotTrigger403(t *testing.T) {
-	passiveNamespace := `{"model":"gpt-5.5","tools":[{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]}],"tool_choice":"auto","input":"write code"}`
-	rec := runOpenAIResponsesImagePermissionGateTest(t, service.PlatformOpenAI, passiveNamespace)
+func TestOpenAIGatewayHandlerResponses_RejectsDuplicateImagePolicyRootKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		body string
+	}{
+		{name: "model safe first image second", key: "model", body: `{"model":"gpt-5.5","model":"gpt-image-2","input":"write code"}`},
+		{name: "model image first safe second", key: "model", body: `{"model":"gpt-image-2","model":"gpt-5.5","input":"write code"}`},
+		{name: "tools safe first image second", key: "tools", body: `{"model":"gpt-5.5","tools":[{"type":"function","name":"lookup"}],"tools":[{"type":"function","name":"image_gen.imagegen"}],"input":"write code","tool_choice":"auto"}`},
+		{name: "tools image first safe second", key: "tools", body: `{"model":"gpt-5.5","tools":[{"type":"function","name":"image_gen.imagegen"}],"tools":[{"type":"function","name":"lookup"}],"input":"write code","tool_choice":"auto"}`},
+		{name: "input safe first image second", key: "input", body: `{"model":"gpt-5.5","input":"write code","input":[{"type":"additional_tools","tools":[{"type":"function","name":"image_gen.imagegen"}]}],"tool_choice":"auto"}`},
+		{name: "input image first safe second", key: "input", body: `{"model":"gpt-5.5","input":[{"type":"additional_tools","tools":[{"type":"function","name":"image_gen.imagegen"}]}],"input":"write code","tool_choice":"auto"}`},
+		{name: "tool choice safe first image second", key: "tool_choice", body: `{"model":"gpt-5.5","input":"write code","tool_choice":"auto","tool_choice":{"type":"function","name":"image_gen.imagegen"}}`},
+		{name: "tool choice image first safe second", key: "tool_choice", body: `{"model":"gpt-5.5","input":"write code","tool_choice":{"type":"function","name":"image_gen.imagegen"},"tool_choice":"auto"}`},
+	}
 
-	require.NotEqual(t, http.StatusForbidden, rec.Code,
-		"passive image_gen namespace with tool_choice=auto should not trigger 403 (#4447)")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := runOpenAIResponsesImagePermissionGateTest(t, service.PlatformOpenAI, tt.body)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), `duplicate root key \"`+tt.key+`\"`)
+		})
+	}
 }
 
 func runOpenAIResponsesImagePermissionGateTest(t *testing.T, platform string, body string) *httptest.ResponseRecorder {

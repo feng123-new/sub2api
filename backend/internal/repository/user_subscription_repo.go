@@ -400,6 +400,22 @@ func (r *userSubscriptionRepository) ResetUsageWindows(ctx context.Context, id i
 	return translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
 }
 
+func (r *userSubscriptionRepository) ScheduleUsageWindowReset(ctx context.Context, id int64, resetDaily, resetWeekly, resetMonthly bool, dailyStart, weeklyStart, monthlyStart time.Time) error {
+	client := clientFromContext(ctx, r.client)
+	update := client.UserSubscription.UpdateOneID(id)
+	if resetDaily {
+		update.SetDailyWindowStart(dailyStart)
+	}
+	if resetWeekly {
+		update.SetWeeklyWindowStart(weeklyStart)
+	}
+	if resetMonthly {
+		update.SetMonthlyWindowStart(monthlyStart)
+	}
+	_, err := update.Save(ctx)
+	return translatePersistenceError(err, service.ErrSubscriptionNotFound, nil)
+}
+
 func (r *userSubscriptionRepository) ResetDailyUsage(ctx context.Context, id int64, expectedWindowStart *time.Time, newWindowStart time.Time) error {
 	client := clientFromContext(ctx, r.client)
 	query := client.UserSubscription.Update().Where(usersubscription.IDEQ(id))

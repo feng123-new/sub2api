@@ -228,3 +228,47 @@ func TestOpenAIGatewayHandlerResponses_TextOnlyNotRejectedByImageConcurrency(t *
 	require.NotEqual(t, http.StatusTooManyRequests, rec.Code)
 	require.NotContains(t, rec.Body.String(), "Image generation concurrency limit exceeded")
 }
+
+func TestOpenAIGatewayHandlerResponses_DisabledGroupPassiveImageNamespaceSkipsImageConcurrency(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := `{"model":"gpt-5.5","input":"write code","tools":[{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]},{"type":"function","name":"lookup"}],"tool_choice":"auto"}`
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	groupID := int64(1)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID:      10,
+		GroupID: &groupID,
+		Group: &service.Group{
+			ID:                   groupID,
+			AllowImageGeneration: false,
+		},
+		User: &service.User{ID: 20},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 20, Concurrency: 1})
+
+	h := &OpenAIGatewayHandler{
+		gatewayService:      &service.OpenAIGatewayService{},
+		billingCacheService: service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, &config.Config{RunMode: config.RunModeSimple}, nil),
+		apiKeyService:       &service.APIKeyService{},
+		concurrencyHelper:   &ConcurrencyHelper{concurrencyService: service.NewConcurrencyService(&helperConcurrencyCacheStub{userSeq: []bool{true}})},
+		cfg: &config.Config{Gateway: config.GatewayConfig{ImageConcurrency: config.ImageConcurrencyConfig{
+			Enabled:               true,
+			MaxConcurrentRequests: 1,
+			OverflowMode:          config.ImageConcurrencyOverflowModeReject,
+		}}},
+		imageLimiter: &imageConcurrencyLimiter{},
+	}
+	release, acquired := h.acquireImageGenerationSlot(c, false)
+	require.True(t, acquired)
+	require.NotNil(t, release)
+	defer release()
+	rec.Body.Reset()
+	rec.Code = 0
+
+	h.Responses(c)
+
+	require.NotEqual(t, http.StatusForbidden, rec.Code)
+	require.NotEqual(t, http.StatusTooManyRequests, rec.Code)
+	require.NotContains(t, rec.Body.String(), service.ImageGenerationPermissionMessage())
+}
