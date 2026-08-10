@@ -40,6 +40,10 @@ var (
 	ErrMonthlyLimitExceeded        = infraerrors.TooManyRequests("MONTHLY_LIMIT_EXCEEDED", "monthly usage limit exceeded")
 	ErrSubscriptionNilInput        = infraerrors.BadRequest("SUBSCRIPTION_NIL_INPUT", "subscription input cannot be nil")
 	ErrAdjustWouldExpire           = infraerrors.BadRequest("ADJUST_WOULD_EXPIRE", "adjustment would result in expired subscription (remaining days must be > 0)")
+	ErrResetTimeNotFuture          = infraerrors.BadRequest("RESET_TIME_NOT_FUTURE", "reset time must be in the future")
+	ErrResetTimeAfterExpiry        = infraerrors.BadRequest("RESET_TIME_AFTER_EXPIRY", "reset time must be before subscription expiry")
+	ErrDailyResetTimeNotMidnight   = infraerrors.BadRequest("DAILY_RESET_TIME_NOT_MIDNIGHT", "daily reset time must be midnight in the server timezone")
+	ErrOneTimeDailyResetScheduled  = infraerrors.BadRequest("ONE_TIME_DAILY_RESET_SCHEDULED", "one-time daily quota resets only when the subscription expires")
 )
 
 // SubscriptionService 订阅服务
@@ -889,6 +893,46 @@ func (s *SubscriptionService) AdminResetQuota(ctx context.Context, subscriptionI
 		_ = s.billingCacheService.InvalidateSubscription(ctx, sub.UserID, sub.GroupID)
 	}
 	// Return the refreshed subscription from DB
+	return s.userSubRepo.GetByID(ctx, subscriptionID)
+}
+
+func (s *SubscriptionService) ScheduleQuotaReset(ctx context.Context, subscriptionID int64, resetDaily, resetWeekly, resetMonthly bool, resetAt time.Time) (*UserSubscription, error) {
+	if !resetDaily && !resetWeekly && !resetMonthly {
+		return nil, ErrInvalidInput
+	}
+	now := s.now()
+	if !resetAt.After(now) {
+		return nil, ErrResetTimeNotFuture
+	}
+
+	sub, err := s.userSubRepo.GetByID(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	if !resetAt.Before(sub.ExpiresAt) {
+		return nil, ErrResetTimeAfterExpiry
+	}
+	if resetDaily && sub.HasOneTimeDailyQuota() {
+		return nil, ErrOneTimeDailyResetScheduled
+	}
+
+	dailyWindowStart := resetAt
+	if resetDaily {
+		dailyBoundary := timezone.StartOfDay(resetAt)
+		if !resetAt.Equal(dailyBoundary) {
+			return nil, ErrDailyResetTimeNotMidnight
+		}
+		dailyWindowStart = dailyBoundary.AddDate(0, 0, -1)
+	}
+	weeklyWindowStart := resetAt.Add(-7 * 24 * time.Hour)
+	monthlyWindowStart := resetAt.Add(-30 * 24 * time.Hour)
+	if err := s.userSubRepo.ScheduleUsageWindowReset(ctx, sub.ID, resetDaily, resetWeekly, resetMonthly, dailyWindowStart, weeklyWindowStart, monthlyWindowStart); err != nil {
+		return nil, err
+	}
+
+	if err := s.invalidateSubscriptionCaches(sub.UserID, sub.GroupID); err != nil {
+		return nil, err
+	}
 	return s.userSubRepo.GetByID(ctx, subscriptionID)
 }
 

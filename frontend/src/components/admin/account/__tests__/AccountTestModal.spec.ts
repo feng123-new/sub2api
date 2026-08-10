@@ -153,13 +153,15 @@ describe('AccountTestModal', () => {
       { id: 'grok-4.3', display_name: 'Grok 4.3' },
       { id: 'grok-build-0.1', display_name: 'Grok Build 0.1' }
     ])
-    global.fetch = vi.fn().mockResolvedValue(
-      createStreamResponse([
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(createStreamResponse([
         'data: {"type":"test_start","model":"grok-4.3"}\n',
         'data: {"type":"content","text":"ok"}\n',
+        'data: {"type":"test_complete","success":true,"ttft_ms":345,"duration_ms":1234}\n'
+      ]))
+      .mockResolvedValueOnce(createStreamResponse([
         'data: {"type":"test_complete","success":true}\n'
-      ])
-    ) as any
+      ])))
 
     const wrapper = mountModal({
       id: 13,
@@ -174,8 +176,9 @@ describe('AccountTestModal', () => {
     const buttons = wrapper.findAll('button')
     const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
     expect(startButton).toBeTruthy()
+    if (!startButton) throw new Error('start test button not found')
 
-    await startButton!.trigger('click')
+    await startButton.trigger('click')
     await flushPromises()
 
     expect(global.fetch).toHaveBeenCalledTimes(1)
@@ -185,6 +188,17 @@ describe('AccountTestModal', () => {
       prompt: '',
       mode: 'text'
     })
+    expect(wrapper.text()).toContain('admin.accounts.testFirstToken')
+    expect(wrapper.text()).toContain('345ms')
+    expect(wrapper.text()).toContain('admin.accounts.testDuration')
+    expect(wrapper.text()).toContain('1.23s')
+
+    await startButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.testCompleted')
+    expect(wrapper.text()).not.toContain('admin.accounts.testFirstToken')
+    expect(wrapper.text()).not.toContain('admin.accounts.testDuration')
   })
 
   it('OpenAI Compact 探测会携带 compact 测试模式', async () => {

@@ -106,10 +106,22 @@
           <!-- Result Status -->
           <div
             v-if="status === 'success'"
-            class="mt-3 flex items-center gap-2 border-t border-gray-700 pt-3 text-green-400"
+            class="mt-3 border-t border-gray-700 pt-3"
           >
-            <Icon name="check" size="sm" :stroke-width="2" />
-            <span>{{ t('admin.accounts.testCompleted') }}</span>
+            <div class="flex items-center gap-2 text-green-400">
+              <Icon name="check" size="sm" :stroke-width="2" />
+              <span>{{ t('admin.accounts.testCompleted') }}</span>
+            </div>
+            <dl v-if="hasTimingMetrics" class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 pl-5 text-xs">
+              <div v-if="ttftMs !== null" class="flex items-baseline gap-1">
+                <dt class="text-green-300/80">{{ t('admin.accounts.testFirstToken') }}</dt>
+                <dd class="font-medium tabular-nums text-green-200">{{ formatDuration(ttftMs) }}</dd>
+              </div>
+              <div v-if="durationMs !== null" class="flex items-baseline gap-1">
+                <dt class="text-green-300/80">{{ t('admin.accounts.testDuration') }}</dt>
+                <dd class="font-medium tabular-nums text-green-200">{{ formatDuration(durationMs) }}</dd>
+              </div>
+            </dl>
           </div>
           <div
             v-else-if="status === 'error'"
@@ -251,6 +263,7 @@ import { Icon } from '@/components/icons'
 import { useClipboard } from '@/composables/useClipboard'
 import { buildApiUrl } from '@/api/client'
 import { adminAPI } from '@/api/admin'
+import type { AccountTestEvent } from '@/api/admin/accounts'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
@@ -280,6 +293,8 @@ const status = ref<'idle' | 'connecting' | 'success' | 'error'>('idle')
 const outputLines = ref<OutputLine[]>([])
 const streamingContent = ref('')
 const errorMessage = ref('')
+const ttftMs = ref<number | null>(null)
+const durationMs = ref<number | null>(null)
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
@@ -287,13 +302,14 @@ const loadingModels = ref(false)
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewImage[]>([])
 const testMode = ref<'default' | 'compact'>('default')
+const hasTimingMetrics = computed(() => ttftMs.value !== null || durationMs.value !== null)
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const openAITestModeOptions = computed(() => [
   { value: 'default', label: t('admin.accounts.openai.testModeDefault') },
   { value: 'compact', label: t('admin.accounts.openai.testModeCompact') }
 ])
 const previewImageUrl = ref('')
-const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
+const prioritizedGeminiModels = ['gemini-3.1-flash-image', 'gemini-2.5-flash-image', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3-flash-preview', 'gemini-3-pro-preview', 'gemini-2.0-flash']
 const supportsGeminiImageTest = computed(() => {
   const modelID = selectedModelId.value.toLowerCase()
   if (!modelID.startsWith('gemini-') || !modelID.includes('-image')) return false
@@ -376,6 +392,8 @@ const resetState = () => {
   outputLines.value = []
   streamingContent.value = ''
   errorMessage.value = ''
+  ttftMs.value = null
+  durationMs.value = null
   generatedImages.value = []
   previewImageUrl.value = ''
 }
@@ -482,15 +500,7 @@ const startTest = async () => {
   }
 }
 
-const handleEvent = (event: {
-  type: string
-  text?: string
-  model?: string
-  success?: boolean
-  error?: string
-  image_url?: string
-  mime_type?: string
-}) => {
+const handleEvent = (event: AccountTestEvent) => {
   switch (event.type) {
     case 'test_start':
       addLine(t('admin.accounts.connectedToApi'), 'text-green-400')
@@ -537,6 +547,8 @@ const handleEvent = (event: {
         streamingContent.value = ''
       }
       if (event.success) {
+        ttftMs.value = event.ttft_ms ?? null
+        durationMs.value = event.duration_ms ?? null
         status.value = 'success'
       } else {
         status.value = 'error'
@@ -553,6 +565,11 @@ const handleEvent = (event: {
       }
       break
   }
+}
+
+const formatDuration = (ms: number): string => {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`
+  return `${Math.round(ms)}ms`
 }
 
 const copyOutput = () => {
