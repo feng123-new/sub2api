@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oauth2agent"
+version = "0.1.0"
+description = "Convert ChatGPT/Codex OAuth credentials into identity-only Codex Agent Identity files compatible with Sub2API."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "feng123-new" }]
+dependencies = [
+  "cryptography>=41.0",
+  "PyNaCl>=1.5.0",
+]
+
+[project.scripts]
+oauth2agent = "oauth2agent.cli:main"
+
+[tool.setuptools]
+packages = ["oauth2agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
