@@ -95,6 +95,10 @@ func (r *subscriptionExpiryRepoStub) ResetUsageWindows(context.Context, int64, b
 	return nil
 }
 
+func (r *subscriptionExpiryRepoStub) ScheduleUsageWindowReset(context.Context, int64, bool, bool, bool, time.Time, time.Time, time.Time) error {
+	return nil
+}
+
 func (r *subscriptionExpiryRepoStub) ResetDailyUsage(context.Context, int64, *time.Time, time.Time) error {
 	return nil
 }

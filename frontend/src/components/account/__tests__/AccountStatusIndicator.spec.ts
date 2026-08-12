@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { describe, expect, it, vi } from 'vitest'
 import AccountStatusIndicator from '../AccountStatusIndicator.vue'
 import type { Account } from '@/types'
 
@@ -159,6 +159,32 @@ describe('AccountStatusIndicator', () => {
 
     expect(wrapper.text()).toContain('CSon45')
     expect(wrapper.text()).not.toContain('⚡')
+  })
+
+  it('Gemini 3.6 Flash 限流显示短标签', () => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: {
+        account: makeAccount({
+          id: 6,
+          name: 'gemini-3.6',
+          extra: {
+            model_rate_limits: {
+              'gemini-3.6-flash': {
+                rate_limited_at: '2026-07-27T00:00:00Z',
+                rate_limit_reset_at: '2099-07-27T01:00:00Z'
+              }
+            }
+          }
+        })
+      },
+      global: {
+        stubs: {
+          Icon: true
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('G36F')
   })
 
   it('AICredits key 生效 → 显示积分已用尽 (credits_exhausted)', () => {

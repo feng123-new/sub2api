@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -207,6 +208,58 @@ func TestStripOpenAIImageGenerationToolsFromRawPayload(t *testing.T) {
 		require.False(t, gjson.GetBytes(updated, `tools.#(type=="image_generation")`).Exists())
 		require.True(t, gjson.GetBytes(updated, `tools.#(type=="function")`).Exists())
 		require.False(t, gjson.GetBytes(updated, "tool_choice").Exists())
+	})
+
+	t.Run("flat and nested image function declarations", func(t *testing.T) {
+		payload := []byte(`{
+			"type":"response.create",
+			"model":"gpt-5.5",
+			"tools":[
+				{"type":"function","name":"lookup"},
+				{"type":"function","name":"image_gen.imagegen"},
+				{"type":"function","function":{"name":"image_gen.imagegen"}}
+			],
+			"input":[
+				{"type":"message","role":"user","content":"hello"},
+				{"type":"additional_tools","tools":[
+					{"type":"custom","name":"exec"},
+					{"type":"function","function":{"name":"image_gen.imagegen"}}
+				]}
+			],
+			"tool_choice":"auto"
+		}`)
+
+		updated, changed, err := stripOpenAIImageGenerationToolsFromRawPayload(payload)
+
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.False(t, gjson.GetBytes(updated, `tools.#(name=="image_gen.imagegen")`).Exists())
+		require.False(t, gjson.GetBytes(updated, `tools.#(function.name=="image_gen.imagegen")`).Exists())
+		require.False(t, gjson.GetBytes(updated, `input.#(type=="additional_tools").tools.#(function.name=="image_gen.imagegen")`).Exists())
+		require.True(t, gjson.GetBytes(updated, `tools.#(name=="lookup")`).Exists())
+		require.True(t, gjson.GetBytes(updated, `input.#(type=="additional_tools").tools.#(name=="exec")`).Exists())
+	})
+
+	t.Run("preserves integers outside float64 exact range", func(t *testing.T) {
+		payload := []byte(`{"model":"gpt-5.5","metadata":{"request_id":9007199254740993,"negative":-9007199254740993},"tools":[{"type":"function","name":"lookup"},{"type":"image_generation"}]}`)
+
+		updated, changed, err := stripOpenAIImageGenerationToolsFromRawPayload(payload)
+
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.True(t, bytes.Contains(updated, []byte(`"request_id":9007199254740993`)), string(updated))
+		require.True(t, bytes.Contains(updated, []byte(`"negative":-9007199254740993`)), string(updated))
+	})
+
+	t.Run("preserves large valid JSON numbers", func(t *testing.T) {
+		payload := []byte(`{"model":"gpt-5.5","metadata":{"huge":1e1000000,"precise":12345678901234567890.123456789},"tools":[{"type":"function","name":"lookup"},{"type":"image_generation"}]}`)
+
+		updated, changed, err := stripOpenAIImageGenerationToolsFromRawPayload(payload)
+
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.True(t, bytes.Contains(updated, []byte(`"huge":1e1000000`)), string(updated))
+		require.True(t, bytes.Contains(updated, []byte(`"precise":12345678901234567890.123456789`)), string(updated))
 	})
 
 	t.Run("namespace and Responses Lite tools", func(t *testing.T) {

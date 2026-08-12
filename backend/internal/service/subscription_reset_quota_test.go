@@ -272,3 +272,151 @@ func TestAdminResetQuota_ReturnsRefreshedSub(t *testing.T) {
 	require.Equal(t, float64(0), result.DailyUsageUSD, "返回的订阅应反映已归零的用量")
 	require.True(t, stub.resetDailyCalled)
 }
+
+type scheduleQuotaResetRepoStub struct {
+	userSubRepoNoop
+
+	sub                *UserSubscription
+	updated            bool
+	updatedDaily       bool
+	updatedWeekly      bool
+	updatedMonthly     bool
+	dailyWindowStart   time.Time
+	weeklyWindowStart  time.Time
+	monthlyWindowStart time.Time
+}
+
+func (r *scheduleQuotaResetRepoStub) GetByID(_ context.Context, id int64) (*UserSubscription, error) {
+	if r.sub == nil || r.sub.ID != id {
+		return nil, ErrSubscriptionNotFound
+	}
+	cp := *r.sub
+	return &cp, nil
+}
+
+func (r *scheduleQuotaResetRepoStub) ScheduleUsageWindowReset(_ context.Context, _ int64, resetDaily, resetWeekly, resetMonthly bool, dailyStart, weeklyStart, monthlyStart time.Time) error {
+	r.updated = true
+	r.updatedDaily = resetDaily
+	r.updatedWeekly = resetWeekly
+	r.updatedMonthly = resetMonthly
+	r.dailyWindowStart = dailyStart
+	r.weeklyWindowStart = weeklyStart
+	r.monthlyWindowStart = monthlyStart
+	if resetDaily {
+		r.sub.DailyWindowStart = &dailyStart
+	}
+	if resetWeekly {
+		r.sub.WeeklyWindowStart = &weeklyStart
+	}
+	if resetMonthly {
+		r.sub.MonthlyWindowStart = &monthlyStart
+	}
+	return nil
+}
+
+func TestScheduleQuotaReset_SetsSelectedNextResetTimesWithoutClearingUsage(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, timezone.Location())
+	resetAt := timezone.StartOfDay(now).AddDate(0, 0, 1)
+	monthlyWindow := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	stub := &scheduleQuotaResetRepoStub{
+		sub: &UserSubscription{
+			ID:                 11,
+			UserID:             22,
+			GroupID:            33,
+			Status:             SubscriptionStatusActive,
+			StartsAt:           now.Add(-30 * 24 * time.Hour),
+			ExpiresAt:          now.Add(30 * 24 * time.Hour),
+			DailyUsageUSD:      12.5,
+			WeeklyUsageUSD:     25,
+			MonthlyUsageUSD:    50,
+			MonthlyWindowStart: &monthlyWindow,
+		},
+	}
+	svc := NewSubscriptionService(groupRepoNoop{}, stub, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+
+	result, err := svc.ScheduleQuotaReset(context.Background(), 11, true, true, false, resetAt)
+
+	require.NoError(t, err)
+	require.True(t, stub.updated)
+	require.True(t, stub.updatedDaily)
+	require.True(t, stub.updatedWeekly)
+	require.False(t, stub.updatedMonthly)
+	require.Equal(t, resetAt.AddDate(0, 0, -1), stub.dailyWindowStart)
+	require.Equal(t, resetAt.Add(-7*24*time.Hour), stub.weeklyWindowStart)
+	require.Equal(t, resetAt.Add(-30*24*time.Hour), stub.monthlyWindowStart)
+	require.Equal(t, resetAt.AddDate(0, 0, -1), *result.DailyWindowStart)
+	require.Equal(t, resetAt.Add(-7*24*time.Hour), *result.WeeklyWindowStart)
+	require.Equal(t, monthlyWindow, *result.MonthlyWindowStart)
+	require.Equal(t, resetAt, *result.DailyResetTime())
+	require.Equal(t, 12.5, result.DailyUsageUSD)
+	require.Equal(t, 25.0, result.WeeklyUsageUSD)
+	require.Equal(t, 50.0, result.MonthlyUsageUSD)
+}
+
+func TestScheduleQuotaReset_RejectsDailyScheduleForOneTimeQuota(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, timezone.Location())
+	resetAt := timezone.StartOfDay(now).AddDate(0, 0, 1)
+	stub := &scheduleQuotaResetRepoStub{
+		sub: &UserSubscription{
+			ID:        14,
+			UserID:    22,
+			GroupID:   33,
+			Status:    SubscriptionStatusActive,
+			StartsAt:  now,
+			ExpiresAt: now.Add(23 * time.Hour),
+		},
+	}
+	svc := NewSubscriptionService(groupRepoNoop{}, stub, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.ScheduleQuotaReset(context.Background(), 14, true, false, false, resetAt)
+
+	require.ErrorIs(t, err, ErrOneTimeDailyResetScheduled)
+	require.False(t, stub.updated)
+}
+
+func TestScheduleQuotaReset_RejectsDailyTimeOutsideServerMidnight(t *testing.T) {
+	now := time.Date(2026, 8, 7, 10, 0, 0, 0, timezone.Location())
+	stub := &scheduleQuotaResetRepoStub{
+		sub: &UserSubscription{
+			ID:        13,
+			UserID:    22,
+			GroupID:   33,
+			Status:    SubscriptionStatusActive,
+			StartsAt:  now.Add(-24 * time.Hour),
+			ExpiresAt: now.Add(48 * time.Hour),
+		},
+	}
+	svc := NewSubscriptionService(groupRepoNoop{}, stub, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.ScheduleQuotaReset(context.Background(), 13, true, false, false, timezone.StartOfDay(now).AddDate(0, 0, 1).Add(time.Hour))
+
+	require.ErrorIs(t, err, ErrDailyResetTimeNotMidnight)
+	require.False(t, stub.updated)
+}
+
+func TestScheduleQuotaReset_RejectsNonFutureOrPostExpiryTime(t *testing.T) {
+	now := time.Date(2026, 8, 7, 4, 0, 0, 0, time.UTC)
+	stub := &scheduleQuotaResetRepoStub{
+		sub: &UserSubscription{
+			ID:        12,
+			UserID:    22,
+			GroupID:   33,
+			Status:    SubscriptionStatusActive,
+			StartsAt:  now.Add(-24 * time.Hour),
+			ExpiresAt: now.Add(48 * time.Hour),
+		},
+	}
+	svc := NewSubscriptionService(groupRepoNoop{}, stub, nil, nil, nil)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.ScheduleQuotaReset(context.Background(), 12, true, false, false, now)
+	require.Error(t, err)
+	require.False(t, stub.updated)
+
+	_, err = svc.ScheduleQuotaReset(context.Background(), 12, true, false, false, stub.sub.ExpiresAt)
+	require.Error(t, err)
+	require.False(t, stub.updated)
+}

@@ -33,6 +33,82 @@ func TestContentModerationKeywordMatcherMatchesLegacyBehavior(t *testing.T) {
 	}
 }
 
+func TestContentModerationKeywordMatchersApplyBoundaryAndTrimmingRules(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		keywords    []string
+		wantKeyword string
+		wantHit     bool
+	}{
+		{name: "latin substring inside word misses", text: "concatenate", keywords: []string{"cat"}},
+		{name: "latin word matches", text: "a cat!", keywords: []string{"cat"}, wantKeyword: "cat", wantHit: true},
+		{name: "underscore remains a word rune", text: "safe_bad_value", keywords: []string{"bad"}},
+		{name: "trimmed latin keyword matches", text: "this is bad", keywords: []string{"  bad\t"}, wantKeyword: "  bad\t", wantHit: true},
+		{name: "non latin keyword remains substring", text: "前置敏感词后置", keywords: []string{"敏感"}, wantKeyword: "敏感", wantHit: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			legacyKeyword, legacyHit := matchBlockedKeyword(tt.text, tt.keywords)
+			require.Equal(t, tt.wantHit, legacyHit)
+			require.Equal(t, tt.wantKeyword, legacyKeyword)
+
+			matcherKeyword, matcherHit := newContentModerationKeywordMatcher(tt.keywords).Match(tt.text)
+			require.Equal(t, tt.wantHit, matcherHit)
+			require.Equal(t, tt.wantKeyword, matcherKeyword)
+		})
+	}
+
+	require.Nil(t, newContentModerationKeywordMatcher([]string{"", " \t "}))
+}
+
+func TestContentModerationKeywordMatcherAppliesBoundariesOnlyToWordRuneEdges(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		keyword string
+		wantHit bool
+	}{
+		{name: "trailing punctuation skips following boundary", text: "C++17", keyword: "C++", wantHit: true},
+		{name: "leading word rune still requires preceding boundary", text: "XC++", keyword: "C++"},
+		{name: "leading punctuation skips preceding boundary", text: "file.exe", keyword: ".exe", wantHit: true},
+		{name: "trailing word rune still requires following boundary", text: ".exe2", keyword: ".exe"},
+		{name: "multibyte leading word rune requires preceding boundary", text: "Xé+", keyword: "é+"},
+		{name: "multibyte trailing word rune requires following boundary", text: ".é2", keyword: ".é"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyword, hit := newContentModerationKeywordMatcher([]string{tt.keyword}).Match(tt.text)
+			require.Equal(t, tt.wantHit, hit)
+			if tt.wantHit {
+				require.Equal(t, tt.keyword, keyword)
+			} else {
+				require.Empty(t, keyword)
+			}
+		})
+	}
+}
+
+func TestContentModerationKeywordMatcherValidatesTerminalOutputChainBoundaries(t *testing.T) {
+	keywords := []string{"he", "she"}
+
+	keyword, hit := newContentModerationKeywordMatcher(keywords).Match("she!")
+
+	require.True(t, hit)
+	require.Equal(t, "she", keyword)
+}
+
+func TestContentModerationRuntimeSnapshotNilConfigFailsOpen(t *testing.T) {
+	var snapshot *contentModerationRuntimeSnapshot
+
+	keyword, hit := snapshot.matchBlockedKeyword("blocked")
+
+	require.False(t, hit)
+	require.Empty(t, keyword)
+}
+
 func TestContentModerationKeywordMatcherRandomizedParity(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260714))
 	const alphabet = "abcXYZ"

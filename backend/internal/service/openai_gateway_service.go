@@ -288,6 +288,24 @@ type OpenAIForwardResult struct {
 	wsReplayInputExists bool
 }
 
+type OpenAIGrokStreamingHedgeOptions struct {
+	Delay              time.Duration
+	PrimaryReleaseFunc func()
+	AcquireSecondary   func(context.Context, map[int64]struct{}) (*AccountSelectionResult, error)
+	GroupID            *int64
+	SessionHash        string
+}
+
+type OpenAIForwardOptions struct {
+	GrokStreamingHedge *OpenAIGrokStreamingHedgeOptions
+}
+
+type OpenAIForwardOutcome struct {
+	Result                       *OpenAIForwardResult
+	Account                      *Account
+	AttemptedSecondaryAccountIDs []int64
+}
+
 // SucceededForScheduling reports whether this result is an upstream success
 // that may clear model-scoped transient state. The zero value remains a success
 // for existing non-WS callers.
@@ -415,6 +433,7 @@ type OpenAIGatewayService struct {
 	schedulerSnapshot     *SchedulerSnapshotService
 	concurrencyService    *ConcurrencyService
 	billingService        *BillingService
+	contextPreflight      *openAIContextPreflight
 	rateLimitService      *RateLimitService
 	billingCacheService   *BillingCacheService
 	userGroupRateResolver *userGroupRateResolver
@@ -506,6 +525,7 @@ func NewOpenAIGatewayService(
 		schedulerSnapshot:   schedulerSnapshot,
 		concurrencyService:  concurrencyService,
 		billingService:      billingService,
+		contextPreflight:    newOpenAIContextPreflight(cfg, billingService),
 		rateLimitService:    rateLimitService,
 		billingCacheService: billingCacheService,
 		userGroupRateResolver: newUserGroupRateResolver(

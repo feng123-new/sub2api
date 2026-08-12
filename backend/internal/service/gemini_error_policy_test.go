@@ -458,6 +458,70 @@ func TestGeminiErrorPolicy_NilRateLimitService(t *testing.T) {
 // policy tests. Embeds mockAccountRepoForGemini and adds tracking.
 // ---------------------------------------------------------------------------
 
+func TestHandleGeminiUpstreamError_VertexGenericResourceExhaustedDoesNotPersistRateLimit(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+	account := &Account{
+		ID:       510,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "vertex-project",
+			"tier_id":    "vertex",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"message":"Resource exhausted. Please try again later. Please refer to https://cloud.google.com/vertex-ai/generative-ai/docs/error-code-429 for more details.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Zero(t, repo.rateLimitCalls)
+}
+
+func TestHandleGeminiUpstreamError_VertexExplicitResetPersistsRateLimit(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+	account := &Account{
+		ID:       511,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "vertex-project",
+			"tier_id":    "vertex",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"details":[{"metadata":{"quotaResetDelay":"30s"}}],"message":"Resource exhausted.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	before := time.Now()
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(511), repo.lastRateLimitID)
+	require.WithinDuration(t, before.Add(30*time.Second), repo.lastRateLimitReset, 2*time.Second)
+}
+
+func TestHandleGeminiUpstreamError_VertexDailyQuotaPersistsRateLimit(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+	account := &Account{
+		ID:       512,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "vertex-project",
+			"tier_id":    "vertex",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"message":"Requests per day quota exceeded.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	before := time.Now()
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(512), repo.lastRateLimitID)
+	require.True(t, repo.lastRateLimitReset.After(before))
+	require.True(t, repo.lastRateLimitReset.Before(before.Add(25*time.Hour)))
+}
+
 func TestHandleGeminiUpstreamError_GoogleOneCapacityExhaustedUsesTierCooldown(t *testing.T) {
 	repo := &rateLimit429AccountRepoStub{}
 	quotaSvc := NewGeminiQuotaService(&config.Config{}, nil)
