@@ -28,6 +28,8 @@ Sub2API / Codex Responses
 
 > Agent Identity 目前仍属于 OpenAI Codex 中的开发中能力，不是稳定公开 API。服务端接口或字段可能变化。本工具按当前公开 Codex 源码行为实现，使用前请先在非关键账号上验证。
 
+> **Sub2API 兼容性：** Agent Identity 导入/运行端按上游 Sub2API v0.1.175+ 的实现对齐。`convert` 可以独立使用；`pull`/`push` 需要目标 Sub2API 提供对应管理接口和 Agent Identity 支持。较旧或自定义分支请先升级/移植相关能力。
+
 ## 功能
 
 - 读取 Codex `auth.json`、Sub2API 账号导出 JSON，以及常见嵌套 OAuth JSON。
