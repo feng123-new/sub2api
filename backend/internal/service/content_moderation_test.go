@@ -457,6 +457,34 @@ func TestMatchBlockedKeyword_CaseInsensitiveSubstring(t *testing.T) {
 	require.False(t, hit)
 }
 
+func TestMatchBlockedKeywordAppliesBoundariesOnlyToWordRuneEdges(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		keyword string
+		wantHit bool
+	}{
+		{name: "trailing punctuation skips following boundary", text: "C++17", keyword: "C++", wantHit: true},
+		{name: "leading word rune still requires preceding boundary", text: "XC++", keyword: "C++"},
+		{name: "leading punctuation skips preceding boundary", text: "file.exe", keyword: ".exe", wantHit: true},
+		{name: "trailing word rune still requires following boundary", text: ".exe2", keyword: ".exe"},
+		{name: "multibyte leading word rune requires preceding boundary", text: "Xé+", keyword: "é+"},
+		{name: "multibyte trailing word rune requires following boundary", text: ".é2", keyword: ".é"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyword, hit := matchBlockedKeyword(tt.text, []string{tt.keyword})
+			require.Equal(t, tt.wantHit, hit)
+			if tt.wantHit {
+				require.Equal(t, tt.keyword, keyword)
+			} else {
+				require.Empty(t, keyword)
+			}
+		})
+	}
+}
+
 func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T) {
 	upstreamCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -36,6 +36,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // sseDataPrefix matches SSE data lines with optional whitespace after colon.
@@ -56,12 +57,46 @@ type TestEvent struct {
 	Code     string `json:"code,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
 	// AudioURL / VideoURL are data: or https URLs for in-browser media players.
-	AudioURL string `json:"audio_url,omitempty"`
-	VideoURL string `json:"video_url,omitempty"`
-	MimeType string `json:"mime_type,omitempty"`
-	Data     any    `json:"data,omitempty"`
-	Success  bool   `json:"success,omitempty"`
-	Error    string `json:"error,omitempty"`
+	AudioURL   string `json:"audio_url,omitempty"`
+	VideoURL   string `json:"video_url,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	Data       any    `json:"data,omitempty"`
+	Success    bool   `json:"success,omitempty"`
+	Error      string `json:"error,omitempty"`
+	TTFTMs     *int64 `json:"ttft_ms,omitempty"`
+	DurationMs *int64 `json:"duration_ms,omitempty"`
+}
+
+type accountTestStreamTiming struct {
+	startedAt     time.Time
+	firstOutputAt time.Time
+}
+
+func (t *accountTestStreamTiming) markFirstOutput(now time.Time) {
+	if t == nil || !t.firstOutputAt.IsZero() {
+		return
+	}
+	t.firstOutputAt = now
+}
+
+func (t *accountTestStreamTiming) complete(now time.Time) TestEvent {
+	event := TestEvent{Type: "test_complete", Success: true}
+	if t == nil || t.startedAt.IsZero() {
+		return event
+	}
+	durationMs := now.Sub(t.startedAt).Milliseconds()
+	if durationMs < 0 {
+		durationMs = 0
+	}
+	event.DurationMs = &durationMs
+	if !t.firstOutputAt.IsZero() {
+		ttftMs := t.firstOutputAt.Sub(t.startedAt).Milliseconds()
+		if ttftMs < 0 {
+			ttftMs = 0
+		}
+		event.TTFTMs = &ttftMs
+	}
+	return event
 }
 
 // AccountTestOptions carries optional media for admin connectivity tests.
@@ -1058,6 +1093,14 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create Grok test payload")
 	}
+	testSessionID, err := xai.GenerateSessionID()
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Grok test session")
+	}
+	payloadBytes, err = sjson.SetBytes(payloadBytes, "prompt_cache_key", testSessionID)
+	if err != nil {
+		return s.sendErrorAndEnd(c, "Failed to create Grok test payload")
+	}
 
 	if !agentIdentityTaskRecoveryWasTried(ctx) {
 		s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
@@ -1068,7 +1111,11 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 		return s.sendErrorAndEnd(c, "Failed to create Grok request")
 	}
 	s.applyGrokTestRequestHeaders(req, account, authToken, "application/json, text/event-stream")
+	// Keep the request body and conversation header on the same fresh session,
+	// even when account-level header overrides configure a sticky value.
+	req.Header.Set(grokConversationIDHeader, testSessionID)
 
+	testStartedAt := time.Now()
 	resp, err := s.httpUpstream.Do(req, s.grokTestProxyURL(account), account.ID, account.Concurrency)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API request failed: %s", err.Error()))
@@ -1082,7 +1129,7 @@ func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx con
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Grok Responses API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
-	return s.processOpenAIStream(c, resp.Body)
+	return s.processOpenAIStreamWithTiming(c, resp.Body, &accountTestStreamTiming{startedAt: testStartedAt})
 }
 
 func (s *AccountTestService) testGrokImageGeneration(c *gin.Context, ctx context.Context, account *Account, authToken, modelID, prompt, imageDataURL string) error {
@@ -2741,6 +2788,10 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 
 // processOpenAIStream processes the SSE stream from OpenAI Responses API
 func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader) error {
+	return s.processOpenAIStreamWithTiming(c, body, nil)
+}
+
+func (s *AccountTestService) processOpenAIStreamWithTiming(c *gin.Context, body io.Reader, timing *accountTestStreamTiming) error {
 	reader := bufio.NewReader(body)
 	seenCompleted := false
 
@@ -2777,6 +2828,9 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 		}
 
 		eventType, _ := data["type"].(string)
+		if timing != nil && openAIStreamDataStartsClientOutput(jsonStr, eventType) {
+			timing.markFirstOutput(time.Now())
+		}
 
 		switch eventType {
 		case "response.output_text.delta":
@@ -2785,7 +2839,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 				s.sendEvent(c, TestEvent{Type: "content", Text: delta})
 			}
 		case "response.completed", "response.done":
-			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+			s.sendEvent(c, timing.complete(time.Now()))
 			return nil
 		case "response.failed":
 			errorMsg := "OpenAI response failed"

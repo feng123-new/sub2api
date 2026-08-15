@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
@@ -115,8 +116,8 @@ func flattenOpenAIResponsesNamespaces(c *gin.Context, body []byte) ([]byte, erro
 	if !bytes.Contains(body, []byte(`"namespace"`)) {
 		return body, nil
 	}
-	var requestBody map[string]any
-	if err := json.Unmarshal(body, &requestBody); err != nil {
+	requestBody, err := decodeOpenAIResponsesJSONObject(body)
+	if err != nil {
 		return body, fmt.Errorf("decode OpenAI namespace body: %w", err)
 	}
 	names, changed, err := apicompat.FlattenResponsesNamespacesExcept(requestBody, map[string]bool{"image_gen": true})
@@ -222,7 +223,7 @@ func openAIResponsesNamespaceNames(c *gin.Context) map[string]apicompat.Response
 
 func restoreOpenAIResponsesNamespacePayload(c *gin.Context, payload []byte) ([]byte, error) {
 	names := openAIResponsesNamespaceNames(c)
-	if len(names) == 0 || !json.Valid(payload) {
+	if len(names) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
 		return payload, nil
 	}
 	restored, changed, err := apicompat.RestoreResponsesNamespaceCalls(payload, names)
@@ -233,4 +234,21 @@ func restoreOpenAIResponsesNamespacePayload(c *gin.Context, payload []byte) ([]b
 		return restored, nil
 	}
 	return payload, nil
+}
+
+func decodeOpenAIResponsesJSONObject(payload []byte) (map[string]any, error) {
+	var value map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unexpected trailing JSON value")
+	}
+	return value, nil
 }

@@ -442,7 +442,7 @@ func extractGrokWebSearchSources(body []byte, maxResults int) []websearch.Search
 		return true
 	})
 
-	var out []websearch.SearchResult
+	out := make([]websearch.SearchResult, 0)
 	seen := make(map[string]bool)
 	output.ForEach(func(_, item gjson.Result) bool {
 		if item.Get("type").String() != "message" {

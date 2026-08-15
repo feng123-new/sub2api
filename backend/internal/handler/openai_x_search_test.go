@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -25,7 +26,7 @@ func TestBuildGrokXSearchResponsesBody(t *testing.T) {
 	require.Equal(t, xai.DefaultTextModel, gjson.GetBytes(body, "model").String())
 	require.Contains(t, gjson.GetBytes(body, "input").String(), "latest posts from xAI")
 	require.Contains(t, gjson.GetBytes(body, "input").String(), "Return ONLY valid JSON")
-	require.Equal(t, "x_search_call.action.sources", gjson.GetBytes(body, "include.0").String())
+	require.False(t, gjson.GetBytes(body, "include").Exists())
 	require.Equal(t, "required", gjson.GetBytes(body, "tool_choice").String())
 	require.Equal(t, "x_search", gjson.GetBytes(body, "tools.0.type").String())
 	require.Equal(t, "xai", gjson.GetBytes(body, "tools.0.allowed_x_handles.0").String())
@@ -55,4 +56,13 @@ func TestResolveGrokStandaloneSearchModelUsesRuntimeDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "grok-4.6", model)
 	require.Equal(t, model, gjson.GetBytes(body, "model").String())
+}
+
+func TestExtractGrokWebSearchSourcesReturnsEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	results := extractGrokWebSearchSources([]byte(`{"status":"completed","output":[{"type":"x_search_call","status":"completed"}]}`), 1)
+	body, err := json.Marshal(results)
+	require.NoError(t, err)
+	require.JSONEq(t, `[]`, string(body))
 }

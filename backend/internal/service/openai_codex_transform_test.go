@@ -1068,18 +1068,34 @@ func TestStripOpenAIImageGenerationTools_StripsNamespaceFormats(t *testing.T) {
 		"model": "gpt-5.5",
 		"tools": []any{
 			map[string]any{"type": "function", "name": "shell"},
+			map[string]any{"type": "function", "name": "image_gen.imagegen"},
+			map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "image_gen.imagegen"},
+			},
 			imageNamespace(),
 			codeNamespace(),
 		},
 		"input": []any{
 			map[string]any{"type": "message", "role": "user", "content": "hello"},
 			map[string]any{
-				"type":  "additional_tools",
-				"tools": []any{imageNamespace(), codeNamespace()},
+				"type": "additional_tools",
+				"tools": []any{
+					imageNamespace(),
+					map[string]any{"type": "function", "name": "image_gen.imagegen"},
+					map[string]any{
+						"type":     "function",
+						"function": map[string]any{"name": "image_gen.imagegen"},
+					},
+					codeNamespace(),
+				},
 			},
 			map[string]any{
-				"type":  "additional_tools",
-				"tools": []any{imageNamespace()},
+				"type": "additional_tools",
+				"tools": []any{
+					imageNamespace(),
+					map[string]any{"type": "function", "name": "image_gen.imagegen"},
+				},
 			},
 		},
 		"tool_choice": map[string]any{"type": "namespace", "name": "image_gen"},

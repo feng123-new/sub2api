@@ -197,6 +197,13 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			}
 		}
 	}
+	finalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	if finalModel == "" {
+		finalModel = reqModel
+	}
+	if err := s.runOpenAIContextPreflight(ctx, c, openAIContextPreflightEndpointResponses, body, finalModel); err != nil {
+		return nil, err
+	}
 
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)

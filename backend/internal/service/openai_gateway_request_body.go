@@ -1014,6 +1014,8 @@ func openAIFastPolicySettingsFromContext(ctx context.Context) *OpenAIFastPolicyS
 // body. When action=filter it removes the service_tier field; when
 // action=block it returns (body, *OpenAIFastBlockedError). On pass it
 // normalizes the service_tier value (e.g. client alias "fast" → "priority").
+// OpenAI OAuth drops "auto" because the ChatGPT/Codex upstream rejects that
+// public-API default; API key accounts keep the official OpenAI API semantics.
 // action=force_priority rewrites any matched known tier to "priority".
 //
 // Rationale for normalize-on-pass: chat-completions / messages 入口在调用本
@@ -1054,6 +1056,13 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 		}
 		return updated, nil
 	default:
+		if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth && normTier == "auto" {
+			trimmed, err := sjson.DeleteBytes(body, "service_tier")
+			if err != nil {
+				return body, fmt.Errorf("strip unsupported OAuth service_tier auto: %w", err)
+			}
+			return trimmed, nil
+		}
 		// pass：把别名（如 "fast"）写回为规范值（"priority"）。
 		if normTier == rawTier {
 			return body, nil

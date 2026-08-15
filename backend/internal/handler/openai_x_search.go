@@ -65,7 +65,6 @@ func buildGrokXSearchResponsesBody(req grokStandaloneSearchRequest, model string
 		"input":       buildGrokXSearchPrompt(input, maxResults),
 		"tools":       []map[string]any{tool},
 		"tool_choice": "required",
-		"include":     []string{"x_search_call.action.sources"},
 		"store":       false,
 		"stream":      false,
 	})

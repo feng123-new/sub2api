@@ -230,7 +230,7 @@ export default {
         }
       },
       upstreamBilling: {
-        trustWarning: 'This rate is declared by the upstream site for the current API key. Sub2API cannot verify that it matches actual charges. The upstream site or an intermediary may return forged, stale, or modified data. Verify it against bills, balance changes, and actual usage.',
+        trustWarning: 'This rate is declared by the upstream site for the current API key. 畅联服务 cannot verify that it matches actual charges. The upstream site or an intermediary may return forged, stale, or modified data. Verify it against bills, balance changes, and actual usage.',
         autoProbe: 'Automatically probe upstream declared rate',
         autoProbeHint: 'Refresh the upstream declared rate on the global interval. This switch alone does not change the account rate.',
         syncRate: 'Sync upstream declared rate',
@@ -1355,6 +1355,8 @@ export default {
       readyToTest: 'Ready to test. Click "Start Test" to begin...',
       connectingToApi: 'Connecting to API...',
       testCompleted: 'Test completed successfully!',
+      testFirstToken: 'First token',
+      testDuration: 'Total duration',
       testFailed: 'Test failed',
       connectedToApi: 'Connected to API',
       usingModel: 'Using model: {model}',
