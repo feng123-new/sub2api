@@ -243,6 +243,27 @@ func isResponsesWebSocketCompositePlatform(platform string) bool {
 	}
 }
 
+func shouldUseGrokStreamingHedge(cfg *config.Config, stream bool, requestPlatform string, account *service.Account) bool {
+	return cfg != nil &&
+		cfg.Gateway.GrokStreamingHedge.Enabled &&
+		stream &&
+		requestPlatform == service.PlatformGrok &&
+		account != nil &&
+		account.Platform == service.PlatformGrok &&
+		account.Type == service.AccountTypeAPIKey
+}
+
+func mergeOpenAIExcludedAccountIDs(base, additional map[int64]struct{}) map[int64]struct{} {
+	merged := make(map[int64]struct{}, len(base)+len(additional))
+	for accountID := range base {
+		merged[accountID] = struct{}{}
+	}
+	for accountID := range additional {
+		merged[accountID] = struct{}{}
+	}
+	return merged
+}
+
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
 func NewOpenAIGatewayHandler(
 	gatewayService *service.OpenAIGatewayService,
@@ -328,6 +349,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	if gjson.ValidBytes(body) {
+		if validationErr := service.ValidateOpenAIImagePolicyPayload(body); validationErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", validationErr.Error())
+			return
+		}
+	}
 
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
@@ -407,10 +434,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// 使用 IsExplicitImageGenerationIntent 排除被动 image_gen namespace 声明。
-	// Codex 在所有请求中被动声明 image_gen namespace，宽泛检测会导致禁了生图的
-	// 分组中所有 Codex 请求被 403（#4447），并误占生图并发槽位。
-	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body)
+	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
+	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, body) ||
+		service.IsRequiredImageGenerationIntentForPlatform("/v1/responses", reqModel, body, requestPlatform)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
@@ -453,8 +479,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Get subscription info (may be nil)
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
-
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
 	routingStart := time.Now()
 
@@ -611,14 +635,70 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
-		result, err := func() (*service.OpenAIForwardResult, error) {
-			defer func() {
-				if accountReleaseFunc != nil {
-					accountReleaseFunc()
+		var result *service.OpenAIForwardResult
+		hedgedForward := shouldUseGrokStreamingHedge(h.cfg, reqStream, requestPlatform, account)
+		if hedgedForward {
+			baseExcludedIDs := mergeOpenAIExcludedAccountIDs(failedAccountIDs, nil)
+			outcome, forwardErr := h.gatewayService.ForwardWithOptions(
+				c.Request.Context(),
+				c,
+				account,
+				attemptBody,
+				service.OpenAIForwardOptions{GrokStreamingHedge: &service.OpenAIGrokStreamingHedgeOptions{
+					Delay:              time.Duration(h.cfg.Gateway.GrokStreamingHedge.DelaySeconds) * time.Second,
+					PrimaryReleaseFunc: accountReleaseFunc,
+					GroupID:            apiKey.GroupID,
+					SessionHash:        sessionHash,
+					AcquireSecondary: func(acquireCtx context.Context, hedgeExcludedIDs map[int64]struct{}) (*service.AccountSelectionResult, error) {
+						selection, _, selectErr := h.gatewayService.SelectAccountWithSchedulerForCapability(
+							acquireCtx,
+							apiKey.GroupID,
+							"",
+							"",
+							reqModel,
+							mergeOpenAIExcludedAccountIDs(baseExcludedIDs, hedgeExcludedIDs),
+							service.OpenAIUpstreamTransportHTTPSSE,
+							requiredCapability,
+							requireCompact,
+							false,
+							!imageIntent,
+							requestPlatform,
+						)
+						if selectErr != nil || selection == nil || selection.Account == nil {
+							return nil, selectErr
+						}
+						if !selection.Acquired || selection.Account.Platform != service.PlatformGrok || selection.Account.Type != service.AccountTypeAPIKey {
+							if selection.ReleaseFunc != nil {
+								selection.ReleaseFunc()
+							}
+							return nil, nil
+						}
+						selection.ReleaseFunc = wrapReleaseOnDone(c.Request.Context(), selection.ReleaseFunc)
+						return selection, nil
+					},
+				}},
+			)
+			err = forwardErr
+			if outcome != nil {
+				result = outcome.Result
+				for _, attemptedAccountID := range outcome.AttemptedSecondaryAccountIDs {
+					failedAccountIDs[attemptedAccountID] = struct{}{}
 				}
+				if outcome.Account != nil {
+					account = outcome.Account
+					setOpsSelectedAccount(c, account.ID, account.Platform)
+				}
+			}
+		} else {
+			result, err = func() (*service.OpenAIForwardResult, error) {
+				defer func() {
+					if accountReleaseFunc != nil {
+						accountReleaseFunc()
+					}
+				}()
+				return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 			}()
-			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
-		}()
+		}
 		cyberBlockKeyHTTP := ""
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
@@ -679,6 +759,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			if hedgedForward && failoverClientGone(c) {
+				reqLog.Info("openai.hedge_aborted_client_disconnected")
+				return
+			}
 			if result != nil && result.ImageCount > 0 {
 				reqLog.Warn("openai.forward_partial_error_with_image_result",
 					zap.Int64("account_id", account.ID),
@@ -1767,8 +1851,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "unsupported websocket message type")
 		return
 	}
+	service.SetOpenAIWSClientFirstMessageType(c, msgType)
 	if !gjson.ValidBytes(firstMessage) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
+		return
+	}
+	if validationErr := service.ValidateOpenAIImagePolicyPayload(firstMessage); validationErr != nil {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid websocket request payload")
 		return
 	}
 	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
@@ -1808,7 +1897,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
+	requestPlatform := openAICompatibleRequestPlatform(ctx, apiKey)
+	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage) ||
+		service.IsRequiredImageGenerationIntentForPlatform("/v1/responses", reqModel, firstMessage, requestPlatform)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
 		return
@@ -1876,7 +1967,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	}
 
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
-	requestPlatform := openAICompatibleRequestPlatform(ctx, apiKey)
 	requiredTransport := service.OpenAIUpstreamTransportResponsesWebsocketV2Ingress
 	if requestPlatform == service.PlatformGrok {
 		requiredTransport = service.OpenAIUpstreamTransportHTTPSSE
@@ -1940,9 +2030,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 
 	// 与 HTTP Responses 路径保持一致：生图意图请求要求账号支持 Responses API（#4417）。
 	// WSv2 传输本身已隐含 Responses 支持，此处为防御性对齐。
-	// 使用 IsExplicitImageGenerationIntent 排除被动 namespace 声明（#4476）。
 	requiredCapability := service.OpenAIEndpointCapabilityChatCompletions
-	if service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage) && requestPlatform == service.PlatformOpenAI {
+	if imageIntent && requestPlatform == service.PlatformOpenAI {
 		requiredCapability = service.OpenAIEndpointCapabilityResponses
 	}
 

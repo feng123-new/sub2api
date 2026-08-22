@@ -1862,6 +1862,8 @@ func TestForwardGrokResponsesStreamingDefaultsEmptyModelTo45AndSnapshots(t *test
 	require.Equal(t, 5, result.Usage.InputTokens)
 	require.Equal(t, 3, result.Usage.OutputTokens)
 	require.Equal(t, 2, result.Usage.CacheReadInputTokens)
+	require.Equal(t, "grok-4.3", result.UpstreamResponseModel)
+	require.False(t, result.UpstreamResponseModelConflict)
 	require.NotNil(t, result.ReasoningEffort)
 	require.Equal(t, "high", *result.ReasoningEffort)
 	require.Contains(t, recorder.Header().Get("Content-Type"), "text/event-stream")

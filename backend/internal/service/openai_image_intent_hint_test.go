@@ -196,6 +196,7 @@ func TestOpenAIGatewayServicePassthroughCompactImageIntentIsAttemptLocal(t *test
 		name           string
 		canonicalModel string
 		compactModel   string
+		body           string
 		wantRejected   bool
 		wantCanonical  bool
 	}{
@@ -206,9 +207,10 @@ func TestOpenAIGatewayServicePassthroughCompactImageIntentIsAttemptLocal(t *test
 			wantRejected:   true,
 		},
 		{
-			name:           "image to text reaches upstream",
-			canonicalModel: "gpt-image-2",
-			compactModel:   "gpt-5.4",
+			name:           "optional image declaration to text reaches upstream",
+			canonicalModel: "gpt-5.4",
+			compactModel:   "gpt-5.5",
+			body:           `{"model":"gpt-5.4","stream":false,"input":"write code","tools":[{"type":"image_generation"}],"tool_choice":"auto"}`,
 			wantCanonical:  true,
 		},
 	}
@@ -232,7 +234,10 @@ func TestOpenAIGatewayServicePassthroughCompactImageIntentIsAttemptLocal(t *test
 					tt.canonicalModel: tt.compactModel,
 				},
 			}
-			body := []byte(`{"model":"` + tt.canonicalModel + `","stream":false,"input":"draw"}`)
+			body := []byte(tt.body)
+			if len(body) == 0 {
+				body = []byte(`{"model":"` + tt.canonicalModel + `","stream":false,"input":"draw"}`)
+			}
 
 			result, err := svc.Forward(context.Background(), c, account, body)
 

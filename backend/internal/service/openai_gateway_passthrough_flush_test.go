@@ -243,13 +243,13 @@ func TestOpenAIStreamingPassthroughScannerErrorFlushesWrittenResidual(t *testing
 	require.Equal(t, []int{len(wantBody)}, writer.flushBodyLengths)
 }
 
-func TestOpenAIStreamingPassthroughNamespaceRestoreErrorFlushesWrittenResidualOnce(t *testing.T) {
+func TestOpenAIStreamingPassthroughNamespaceTrailingJSONErrorFlushesWrittenResidualOnce(t *testing.T) {
 	writtenPrefix := `data: {"type":"response.output_text.delta","delta":"prefix"}` + "\n"
-	overflowData := `data: {"type":"response.output_text.delta","delta":"not-written","overflow":1e1000}`
+	trailingData := `data: {"type":"response.output_text.delta","delta":"not-written"} {"extra":true}`
 
 	_, recorder, writer, err := runPassthroughFlushTest(
 		t,
-		io.NopCloser(strings.NewReader(writtenPrefix+overflowData)),
+		io.NopCloser(strings.NewReader(writtenPrefix+trailingData)),
 		-1,
 		func(c *gin.Context) {
 			setOpenAIResponsesNamespaceNames(c, map[string]apicompat.ResponsesNamespaceName{

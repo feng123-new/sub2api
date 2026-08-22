@@ -118,6 +118,7 @@ const (
 	openAIGPT54LongContextInputThreshold   = 272000
 	openAIGPT54LongContextInputMultiplier  = 2.0
 	openAIGPT54LongContextOutputMultiplier = 1.5
+	openAIGPT55FastMultiplier              = 2.5
 )
 
 func normalizeBillingServiceTier(serviceTier string) string {
@@ -1055,6 +1056,13 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	return nil, fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
 }
 
+func (s *BillingService) GetExactModelContextLimits(model string) (ModelContextLimits, bool) {
+	if s == nil || s.pricingService == nil {
+		return ModelContextLimits{}, false
+	}
+	return s.pricingService.GetExactModelContextLimits(model)
+}
+
 // GetModelPricingWithChannel 获取模型定价，渠道配置的价格覆盖默认值
 // 渠道存在时，未配置的图片输出价格归零（不回退到 LiteLLM）
 func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing *ChannelModelPricing) (*ModelPricing, error) {
@@ -1435,6 +1443,7 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 	normalized := normalizeKnownOpenAICodexModel(model)
 	isGPT56 := isOpenAIGPT56Model(normalized)
 	usesLegacyLongContextPricing := usesOpenAILegacyLongContextPricing(normalized)
+	needsGPT55FastPolicy := normalized == "gpt-5.5"
 	if !isGPT56 && !usesLegacyLongContextPricing {
 		return pricing
 	}
@@ -1442,10 +1451,24 @@ func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *
 		(pricing.LongContextInputThreshold <= 0 || pricing.LongContextInputMultiplier <= 0 || pricing.LongContextOutputMultiplier <= 0)
 	needsCacheCreationPolicy := isGPT56 && !pricing.CacheCreationPriceExplicit && (pricing.CacheCreationPricePerToken <= 0 ||
 		(pricing.InputPricePerTokenPriority > 0 && pricing.CacheCreationPricePerTokenPriority <= 0))
-	if !needsLongContextPolicy && !needsCacheCreationPolicy {
+	if !needsLongContextPolicy && !needsCacheCreationPolicy && !needsGPT55FastPolicy {
 		return pricing
 	}
 	cloned := *pricing
+	if needsGPT55FastPolicy {
+		if cloned.InputPricePerToken > 0 {
+			cloned.InputPricePerTokenPriority = cloned.InputPricePerToken * openAIGPT55FastMultiplier
+		}
+		if cloned.OutputPricePerToken > 0 {
+			cloned.OutputPricePerTokenPriority = cloned.OutputPricePerToken * openAIGPT55FastMultiplier
+		}
+		if cloned.CacheCreationPricePerToken > 0 {
+			cloned.CacheCreationPricePerTokenPriority = cloned.CacheCreationPricePerToken * openAIGPT55FastMultiplier
+		}
+		if cloned.CacheReadPricePerToken > 0 {
+			cloned.CacheReadPricePerTokenPriority = cloned.CacheReadPricePerToken * openAIGPT55FastMultiplier
+		}
+	}
 	if isGPT56 && !cloned.CacheCreationPriceExplicit {
 		if cloned.CacheCreationPricePerToken <= 0 {
 			cloned.CacheCreationPricePerToken = cloned.InputPricePerToken * 1.25

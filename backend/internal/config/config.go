@@ -938,7 +938,8 @@ type GatewayConfig struct {
 	OpenAIFirstOutputTimeoutSeconds int `mapstructure:"openai_first_output_timeout_seconds"`
 	// OpenAIHighEffortFirstOutputTimeoutSeconds: high/xhigh/max 推理的首个语义输出超时（秒）。
 	// 0 表示回退到 OpenAIFirstOutputTimeoutSeconds。
-	OpenAIHighEffortFirstOutputTimeoutSeconds int `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
+	OpenAIHighEffortFirstOutputTimeoutSeconds int                             `mapstructure:"openai_high_effort_first_output_timeout_seconds"`
+	GrokStreamingHedge                        GatewayGrokStreamingHedgeConfig `mapstructure:"grok_streaming_hedge"`
 	// 请求体最大字节数，用于网关请求体大小限制
 	MaxBodySize int64 `mapstructure:"max_body_size"`
 	// TextMaxBodySize limits endpoints that cannot carry inline image/video payloads.
@@ -980,7 +981,8 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAICompactModel: /responses/compact 上游使用的模型。
 	// compact 端点支持模型滞后于普通 /responses 时，可用该配置降级规避上游错误。
-	OpenAICompactModel string `mapstructure:"openai_compact_model"`
+	OpenAICompactModel string                        `mapstructure:"openai_compact_model"`
+	ContextPreflight   GatewayContextPreflightConfig `mapstructure:"context_preflight"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// Live: ChatGPT Frameless Live 会话配置。
@@ -1123,6 +1125,27 @@ type GatewayCNProvidersConfig struct {
 type GatewayLiveConfig struct {
 	// MaxSessionDurationSeconds 是 Live 会话的硬上限。
 	MaxSessionDurationSeconds int `mapstructure:"max_session_duration_seconds"`
+}
+
+type GatewayContextPreflightConfig struct {
+	Mode      string   `mapstructure:"mode"`
+	Threshold float64  `mapstructure:"threshold"`
+	Models    []string `mapstructure:"models"`
+}
+
+type GatewayGrokStreamingHedgeConfig struct {
+	Enabled      bool `mapstructure:"enabled"`
+	DelaySeconds int  `mapstructure:"delay_seconds"`
+}
+
+func normalizeGatewayContextPreflightConfig(cfg *GatewayContextPreflightConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	for i, model := range cfg.Models {
+		cfg.Models[i] = strings.ToLower(strings.TrimSpace(model))
+	}
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1869,6 +1892,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.Environment = strings.TrimSpace(cfg.Log.Environment)
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
+	normalizeGatewayContextPreflightConfig(&cfg.Gateway.ContextPreflight)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -2010,7 +2034,7 @@ func setDefaults() {
 	// WebAuthn / Passkeys are opt-in because every deployment must explicitly
 	// declare its relying-party domain and trusted browser origins.
 	viper.SetDefault("webauthn.enabled", false)
-	viper.SetDefault("webauthn.rp_display_name", "Sub2API")
+	viper.SetDefault("webauthn.rp_display_name", "畅联服务")
 	viper.SetDefault("webauthn.rp_id", "")
 	viper.SetDefault("webauthn.rp_origins", []string{})
 
@@ -2329,6 +2353,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_response_header_timeout", 0)
 	viper.SetDefault("gateway.openai_first_output_timeout_seconds", 0)
 	viper.SetDefault("gateway.openai_high_effort_first_output_timeout_seconds", 0)
+	viper.SetDefault("gateway.grok_streaming_hedge.enabled", false)
+	viper.SetDefault("gateway.grok_streaming_hedge.delay_seconds", 8)
 	viper.SetDefault("gateway.log_upstream_error_body", true)
 	viper.SetDefault("gateway.log_upstream_error_body_max_bytes", 2048)
 	viper.SetDefault("gateway.inject_beta_for_apikey", false)
@@ -2342,6 +2368,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
+	viper.SetDefault("gateway.context_preflight.mode", "off")
+	viper.SetDefault("gateway.context_preflight.threshold", 0.90)
+	viper.SetDefault("gateway.context_preflight.models", []string{})
 	// OpenAI Responses WebSocket（默认开启；可通过 force_http 紧急回滚）
 	viper.SetDefault("gateway.openai_ws.enabled", true)
 	viper.SetDefault("gateway.openai_ws.mode_router_v2_enabled", false)
@@ -3249,8 +3278,28 @@ func (c *Config) Validate() error {
 		(c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIHighEffortFirstOutputTimeoutSeconds < 30) {
 		return fmt.Errorf("gateway.openai_high_effort_first_output_timeout_seconds must be 0 or between 30-1800 seconds")
 	}
+	if c.Gateway.GrokStreamingHedge.Enabled &&
+		(c.Gateway.GrokStreamingHedge.DelaySeconds < 1 || c.Gateway.GrokStreamingHedge.DelaySeconds > 60) {
+		return fmt.Errorf("gateway.grok_streaming_hedge.delay_seconds must be between 1 and 60 when enabled")
+	}
 	if c.Gateway.Live.MaxSessionDurationSeconds <= 0 {
 		c.Gateway.Live.MaxSessionDurationSeconds = 3600
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.Gateway.ContextPreflight.Mode))
+	switch mode {
+	case "off", "shadow", "enforce":
+	default:
+		return fmt.Errorf("gateway.context_preflight.mode must be one of: off/shadow/enforce")
+	}
+	if math.IsNaN(c.Gateway.ContextPreflight.Threshold) ||
+		c.Gateway.ContextPreflight.Threshold < 0.50 ||
+		c.Gateway.ContextPreflight.Threshold >= 1.00 {
+		return fmt.Errorf("gateway.context_preflight.threshold must be >= 0.50 and < 1.00")
+	}
+	for _, model := range c.Gateway.ContextPreflight.Models {
+		if strings.TrimSpace(model) == "" {
+			return fmt.Errorf("gateway.context_preflight.models must not contain blank entries")
+		}
 	}
 	if strings.TrimSpace(c.Gateway.ConnectionPoolIsolation) != "" {
 		switch c.Gateway.ConnectionPoolIsolation {
