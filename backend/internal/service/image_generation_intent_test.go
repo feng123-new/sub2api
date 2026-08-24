@@ -36,6 +36,20 @@ func TestIsImageGenerationIntent(t *testing.T) {
 			want:     true,
 		},
 		{
+			name:     "flattened image_gen function tool",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"image_gen.imagegen"}]}`),
+			want:     true,
+		},
+		{
+			name:     "nested image_gen function tool",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"model":"gpt-5.5","tools":[{"type":"function","function":{"name":"image_gen.imagegen"}}]}`),
+			want:     true,
+		},
+		{
 			name:     "image tool choice",
 			endpoint: "/v1/responses",
 			model:    "gpt-5.4",
@@ -55,6 +69,20 @@ func TestIsImageGenerationIntent(t *testing.T) {
 			model:    "gpt-5.5",
 			body:     []byte(`{"model":"gpt-5.5","tool_choice":{"function":{"name":"imagegen"}}}`),
 			want:     false,
+		},
+		{
+			name:     "flattened image_gen function tool choice",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"model":"gpt-5.5","tool_choice":{"type":"function","name":"image_gen.imagegen"}}`),
+			want:     true,
+		},
+		{
+			name:     "nested image_gen function tool choice",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"model":"gpt-5.5","tool_choice":{"type":"function","function":{"name":"image_gen.imagegen"}}}`),
+			want:     true,
 		},
 		{
 			name:     "required tool choice alone is text",
@@ -212,6 +240,29 @@ func TestIsImageGenerationIntentMap_NamespaceImageGen(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "flattened image_gen function tool",
+			reqBody: map[string]any{
+				"model": "gpt-5.5",
+				"tools": []any{
+					map[string]any{"type": "function", "name": "image_gen.imagegen"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "nested image_gen function tool",
+			reqBody: map[string]any{
+				"model": "gpt-5.5",
+				"tools": []any{
+					map[string]any{
+						"type":     "function",
+						"function": map[string]any{"name": "image_gen.imagegen"},
+					},
+				},
+			},
+			want: true,
+		},
+		{
 			name: "custom namespace with nested imagegen function is not image intent",
 			reqBody: map[string]any{
 				"model": "gpt-5.5",
@@ -246,6 +297,25 @@ func TestIsImageGenerationIntentMap_NamespaceImageGen(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "flattened image_gen function tool choice",
+			reqBody: map[string]any{
+				"model":       "gpt-5.5",
+				"tool_choice": map[string]any{"type": "function", "name": "image_gen.imagegen"},
+			},
+			want: true,
+		},
+		{
+			name: "nested image_gen function tool choice",
+			reqBody: map[string]any{
+				"model": "gpt-5.5",
+				"tool_choice": map[string]any{
+					"type":     "function",
+					"function": map[string]any{"name": "image_gen.imagegen"},
+				},
+			},
+			want: true,
+		},
+		{
 			name: "non-image namespace not flagged",
 			reqBody: map[string]any{
 				"model": "gpt-5.5",
@@ -262,6 +332,319 @@ func TestIsImageGenerationIntentMap_NamespaceImageGen(t *testing.T) {
 			require.Equal(t, tt.want, IsImageGenerationIntentMap("/v1/responses", "gpt-5.5", tt.reqBody))
 		})
 	}
+}
+
+func TestIsRequiredImageGenerationIntent(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		model    string
+		body     []byte
+		want     bool
+	}{
+		{name: "image endpoint", endpoint: "/v1/images/generations", model: "gpt-5.5", want: true},
+		{name: "image model", endpoint: "/v1/responses", model: "gpt-image-2", want: true},
+		{
+			name:     "passive native image tool is optional",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"image_generation"}],"tool_choice":"auto"}`),
+		},
+		{
+			name:     "passive Lite image namespace is optional",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"}]}],"tool_choice":"auto"}`),
+		},
+		{
+			name:     "passive flattened image function is optional",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"function","name":"image_gen.imagegen"}],"tool_choice":"auto"}`),
+		},
+		{
+			name:     "passive nested image function is optional",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"function","function":{"name":"image_gen.imagegen"}}],"tool_choice":"auto"}`),
+		},
+		{
+			name:     "native image choice is required",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tool_choice":{"type":"image_generation"}}`),
+			want:     true,
+		},
+		{
+			name:     "namespace image choice is required",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tool_choice":{"type":"namespace","name":"image_gen"}}`),
+			want:     true,
+		},
+		{
+			name:     "flattened function choice is required",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tool_choice":{"type":"function","name":"image_gen.imagegen"}}`),
+			want:     true,
+		},
+		{
+			name:     "nested function choice is required",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tool_choice":{"type":"function","function":{"name":"image_gen.imagegen"}}}`),
+			want:     true,
+		},
+		{
+			name:     "required with only top-level image tools",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"image_generation"},{"type":"namespace","name":"image_gen"}],"tool_choice":"required"}`),
+			want:     true,
+		},
+		{
+			name:     "required with only additional image tools",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"}]}],"tool_choice":"required"}`),
+			want:     true,
+		},
+		{
+			name:     "required with only flattened image function",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"function","name":"image_gen.imagegen"}],"tool_choice":"required"}`),
+			want:     true,
+		},
+		{
+			name:     "required with only nested image function",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"function","function":{"name":"image_gen.imagegen"}}],"tool_choice":"required"}`),
+			want:     true,
+		},
+		{
+			name:     "required with mixed top-level tools is optional",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tools":[{"type":"image_generation"},{"type":"function","name":"lookup"}],"tool_choice":"required"}`),
+		},
+		{
+			name:     "required with mixed additional tools is optional",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"image_gen"},{"type":"custom","name":"exec"}]}],"tool_choice":"required"}`),
+		},
+		{
+			name:     "required without available tools is not image intent",
+			endpoint: "/v1/responses",
+			model:    "gpt-5.5",
+			body:     []byte(`{"tool_choice":"required"}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, IsRequiredImageGenerationIntent(tt.endpoint, tt.model, tt.body))
+		})
+	}
+}
+
+func TestIsRequiredImageGenerationIntentForPlatformPreservesGrokSemantics(t *testing.T) {
+	passiveNamespace := []byte(`{"model":"grok-4.5","tools":[{"type":"namespace","name":"image_gen"}],"tool_choice":"auto"}`)
+	nativeImageTool := []byte(`{"model":"grok-4.5","tools":[{"type":"image_generation"}],"tool_choice":"auto"}`)
+
+	require.False(t, IsRequiredImageGenerationIntentForPlatform(openAIResponsesEndpoint, "grok-4.5", passiveNamespace, PlatformGrok))
+	require.True(t, IsRequiredImageGenerationIntentForPlatform(openAIResponsesEndpoint, "grok-4.5", nativeImageTool, PlatformGrok))
+	require.False(t, IsRequiredImageGenerationIntentForPlatform(openAIResponsesEndpoint, "gpt-5.5", nativeImageTool, PlatformOpenAI))
+}
+
+func TestApplyOpenAIImageGenerationPolicyRejectsDuplicateSensitiveRootKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		body []byte
+	}{
+		{
+			name: "model safe first image second",
+			key:  "model",
+			body: []byte(`{"model":"gpt-5.5","model":"gpt-image-2","input":"write code"}`),
+		},
+		{
+			name: "model image first safe second",
+			key:  "model",
+			body: []byte(`{"model":"gpt-image-2","model":"gpt-5.5","input":"write code"}`),
+		},
+		{
+			name: "tools safe first image second",
+			key:  "tools",
+			body: []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"lookup"}],"tools":[{"type":"function","name":"image_gen.imagegen"}],"input":"write code","tool_choice":"auto"}`),
+		},
+		{
+			name: "tools image first safe second",
+			key:  "tools",
+			body: []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"image_gen.imagegen"}],"tools":[{"type":"function","name":"lookup"}],"input":"write code","tool_choice":"auto"}`),
+		},
+		{
+			name: "input safe first image second",
+			key:  "input",
+			body: []byte(`{"model":"gpt-5.5","input":"write code","input":[{"type":"additional_tools","tools":[{"type":"function","name":"image_gen.imagegen"}]}],"tool_choice":"auto"}`),
+		},
+		{
+			name: "input image first safe second",
+			key:  "input",
+			body: []byte(`{"model":"gpt-5.5","input":[{"type":"additional_tools","tools":[{"type":"function","name":"image_gen.imagegen"}]}],"input":"write code","tool_choice":"auto"}`),
+		},
+		{
+			name: "tool choice safe first image second",
+			key:  "tool_choice",
+			body: []byte(`{"model":"gpt-5.5","input":"write code","tool_choice":"auto","tool_choice":{"type":"function","name":"image_gen.imagegen"}}`),
+		},
+		{
+			name: "tool choice image first safe second",
+			key:  "tool_choice",
+			body: []byte(`{"model":"gpt-5.5","input":"write code","tool_choice":{"type":"function","name":"image_gen.imagegen"},"tool_choice":"auto"}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, _, err := applyOpenAIImageGenerationPolicyToRawPayload(
+				openAIResponsesEndpoint,
+				"gpt-5.5",
+				tt.body,
+				PlatformOpenAI,
+				true,
+			)
+
+			require.Error(t, err)
+			var duplicateErr interface {
+				error
+				DuplicateKey() string
+			}
+			require.ErrorAs(t, err, &duplicateErr)
+			require.Equal(t, tt.key, duplicateErr.DuplicateKey())
+		})
+	}
+}
+
+func TestValidateOpenAIImagePolicyPayloadRejectsDuplicateKeysRecursively(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		key  string
+		path string
+	}{
+		{
+			name: "arbitrary root field",
+			body: []byte(`{"model":"gpt-5.5","metadata":{"safe":true},"metadata":{"safe":false}}`),
+			key:  "metadata",
+			path: "root",
+		},
+		{
+			name: "nested tools field",
+			body: []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"function","name":"lookup"}],"tools":[{"type":"function","name":"image_gen.imagegen"}]}]}`),
+			key:  "tools",
+			path: `root["input"][0]`,
+		},
+		{
+			name: "nested input field",
+			body: []byte(`{"metadata":{"input":"first","input":"second"}}`),
+			key:  "input",
+			path: `root["metadata"]`,
+		},
+		{
+			name: "nested tool choice field",
+			body: []byte(`{"metadata":{"tool_choice":"auto","tool_choice":"required"}}`),
+			key:  "tool_choice",
+			path: `root["metadata"]`,
+		},
+		{
+			name: "nested function field",
+			body: []byte(`{"tools":[{"type":"function","function":{"name":"lookup"},"function":{"name":"image_gen.imagegen"}}]}`),
+			key:  "function",
+			path: `root["tools"][0]`,
+		},
+		{
+			name: "tool object",
+			body: []byte(`{"tools":[{"type":"function","name":"lookup","name":"image_gen.imagegen"}]}`),
+			key:  "name",
+			path: `root["tools"][0]`,
+		},
+		{
+			name: "input additional tools object",
+			body: []byte(`{"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"code_tools","name":"image_gen"}]}]}`),
+			key:  "name",
+			path: `root["input"][0]["tools"][0]`,
+		},
+		{
+			name: "tool choice object",
+			body: []byte(`{"tool_choice":{"type":"function","name":"lookup","name":"image_gen.imagegen"}}`),
+			key:  "name",
+			path: `root["tool_choice"]`,
+		},
+		{
+			name: "namespace child",
+			body: []byte(`{"tools":[{"type":"namespace","name":"collaboration","children":[{"type":"function","name":"lookup","name":"imagegen"}]}]}`),
+			key:  "name",
+			path: `root["tools"][0]["children"][0]`,
+		},
+		{
+			name: "function child",
+			body: []byte(`{"tools":[{"type":"function","function":{"name":"lookup","name":"image_gen.imagegen"}}]}`),
+			key:  "name",
+			path: `root["tools"][0]["function"]`,
+		},
+		{
+			name: "escaped ancestor key has safe path",
+			body: []byte(`{"metadata\nx":{"value":1,"value":2}}`),
+			key:  "value",
+			path: `root["metadata\nx"]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateOpenAIImagePolicyPayload(tt.body)
+
+			require.Error(t, err)
+			var duplicateErr OpenAIImagePolicyDuplicateKeyError
+			require.ErrorAs(t, err, &duplicateErr)
+			require.Equal(t, tt.key, duplicateErr.DuplicateKey())
+			require.Equal(t, tt.path, duplicateErr.ContextPath())
+			require.NotContains(t, duplicateErr.ContextPath(), "\n")
+			if tt.path == "root" {
+				var rootErr *OpenAIImagePolicyDuplicateRootKeyError
+				require.ErrorAs(t, err, &rootErr)
+				require.Contains(t, err.Error(), `duplicate root key "`+tt.key+`"`)
+			} else {
+				var nestedErr *OpenAIImagePolicyDuplicateNestedKeyError
+				require.ErrorAs(t, err, &nestedErr)
+			}
+		})
+	}
+}
+
+func TestValidateOpenAIImagePolicyPayloadAllowsSameKeysInSiblingObjects(t *testing.T) {
+	body := []byte(`{
+		"tools":[
+			{"type":"function","name":"lookup","function":{"name":"lookup"}},
+			{"type":"function","name":"image_gen.imagegen","function":{"name":"image_gen.imagegen"}}
+		],
+		"input":[
+			{"type":"message","role":"user"},
+			{"type":"message","role":"assistant"}
+		]
+	}`)
+
+	require.NoError(t, ValidateOpenAIImagePolicyPayload(body))
+}
+
+func TestValidateOpenAIImagePolicyPayloadAllowsDuplicatePreviousResponseIDForRecovery(t *testing.T) {
+	body := []byte(`{"type":"response.create","previous_response_id":"resp_first","input":[],"previous_response_id":"resp_second"}`)
+
+	require.NoError(t, ValidateOpenAIImagePolicyPayload(body))
 }
 
 func TestResolveOpenAIResponsesImageBillingConfigUsesCurrentBodyModel(t *testing.T) {

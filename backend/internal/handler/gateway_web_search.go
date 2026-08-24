@@ -49,15 +49,26 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 		return
 	}
 	req.Query = query
+	if isXSearch {
+		if err := validateGrokWebXSearchFilters(req); err != nil {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": gin.H{
+				"type":    "unsupported_parameter",
+				"message": err.Error(),
+			}})
+			return
+		}
+	}
 	maxResults := 0
 	if req.MaxResults != nil {
 		maxResults = *req.MaxResults
 	}
 	maxResults = normalizeGrokWebSearchMaxResults(maxResults)
-	searchModel := resolveGrokStandaloneSearchModel()
 	searchLabel := "web_search"
+	searchModel := resolveGrokStandaloneSearchModel()
 	if isXSearch {
 		searchLabel = "x_search"
+		searchModel = resolveGrokStandaloneXSearchModel()
 	}
 
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
@@ -220,6 +231,10 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 	// Request IDs are billing idempotency keys, so they must be unique per invocation.
 	// Query/IP/UA hashes would collapse repeated identical searches into one charge.
 	searchRequestID := searchLabel + ":" + uuid.NewString()
+	upstreamSearchModel := searchModel
+	if isXSearch {
+		upstreamSearchModel = account.GetMappedModel(searchModel)
+	}
 	if apiKey.Group != nil {
 		if p := apiKey.Group.GetSearchPricePer1k(); p != nil && *p == 0 {
 			logger.L().With(
@@ -231,10 +246,11 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 	h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
 			Result: &service.ForwardResult{
-				RequestID:   searchRequestID,
-				Model:       "grok-" + strings.ReplaceAll(searchLabel, "_", "-"),
-				SearchCount: 1,
-				Duration:    0,
+				RequestID:     searchRequestID,
+				Model:         "grok-" + strings.ReplaceAll(searchLabel, "_", "-"),
+				UpstreamModel: upstreamSearchModel,
+				SearchCount:   1,
+				Duration:      0,
 			},
 			APIKey:             apiKey,
 			User:               apiKey.User,
@@ -352,6 +368,7 @@ func (h *GatewayHandler) doGrokNativeWebSearch(ctx context.Context, c *gin.Conte
 
 func (h *GatewayHandler) doGrokNativeXSearch(ctx context.Context, c *gin.Context, account *service.Account, req grokStandaloneSearchRequest, model string, maxResults int) (*websearch.SearchResponse, string, error) {
 	maxResults = normalizeGrokWebSearchMaxResults(maxResults)
+	model = account.GetMappedModel(model)
 	bodyBytes, err := buildGrokXSearchResponsesBody(req, model)
 	if err != nil {
 		return nil, "", err
@@ -361,6 +378,24 @@ func (h *GatewayHandler) doGrokNativeXSearch(ctx context.Context, c *gin.Context
 		return nil, "", err
 	}
 	results := extractGrokWebSearchSources(respBytes, maxResults)
+	if err := validateGrokNativeXSearchResponse(respBytes, results); err != nil {
+		return nil, "", &service.UpstreamFailoverError{
+			StatusCode:             http.StatusBadGateway,
+			ClientStatusCode:       http.StatusBadGateway,
+			ClientMessage:          err.Error(),
+			Reason:                 service.GatewayFailureReason("grok_x_search_unverified"),
+			Scope:                  service.GatewayFailureScopeProvider,
+			RequestScopedTransient: true,
+			NextAccountAction:      service.NextAccountRetry,
+		}
+	}
+	logger.L().With(
+		zap.String("component", "handler.gateway.web_search"),
+		zap.Int64("account_id", account.ID),
+		zap.String("public_model", grokStandaloneXSearchModel),
+		zap.String("upstream_model", model),
+		zap.Int("source_count", len(results)),
+	).Info("gateway.x_search.upstream_completed")
 	return &websearch.SearchResponse{
 		Results: results,
 		Query:   req.Query,
@@ -442,7 +477,7 @@ func extractGrokWebSearchSources(body []byte, maxResults int) []websearch.Search
 		return true
 	})
 
-	var out []websearch.SearchResult
+	out := make([]websearch.SearchResult, 0)
 	seen := make(map[string]bool)
 	output.ForEach(func(_, item gjson.Result) bool {
 		if item.Get("type").String() != "message" {

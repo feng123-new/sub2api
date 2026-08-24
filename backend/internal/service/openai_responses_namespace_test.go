@@ -136,6 +136,30 @@ func TestShouldStripOpenAIResponsesInputNamespaces(t *testing.T) {
 	}
 }
 
+func TestFlattenOpenAIResponsesNamespacesPreservesExactNumbers(t *testing.T) {
+	tests := []struct {
+		name   string
+		number string
+	}{
+		{name: "integer beyond float64 exact range", number: "9007199254740993"},
+		{name: "large negative integer", number: "-9007199254740993123456789"},
+		{name: "high precision decimal", number: "12345678901234567890.123456789"},
+		{name: "high precision exponent", number: "1.234567890123456789e+123"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"metadata":{"marker":` + tt.number + `},"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}]}`)
+
+			got, err := flattenOpenAIResponsesNamespaces(nil, body)
+
+			require.NoError(t, err)
+			require.Equal(t, tt.number, gjson.GetBytes(got, "metadata.marker").Raw, string(got))
+			require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(got, "tools.0.name").String())
+		})
+	}
+}
+
 func TestStripOpenAIResponsesInputNamespaces(t *testing.T) {
 	body := []byte(`{
 		"meta":9007199254740993,
@@ -232,4 +256,13 @@ func TestStripOpenAIResponsesInputNamespacesKeepsToolCallNamespaces(t *testing.T
 	for index := 0; index < 8; index++ {
 		require.False(t, gjson.GetBytes(strippedAll, "input."+strconv.Itoa(index)+".namespace").Exists())
 	}
+}
+
+func TestFlattenOpenAIResponsesNamespacesRejectsTrailingJSONValue(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}]} {"extra":true}`)
+
+	got, err := flattenOpenAIResponsesNamespaces(nil, body)
+
+	require.ErrorContains(t, err, "decode OpenAI namespace body")
+	require.Equal(t, body, got)
 }

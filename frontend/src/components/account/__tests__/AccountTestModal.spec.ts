@@ -94,6 +94,26 @@ function buildAccount() {
   } as any
 }
 
+function createStreamResponse(lines: string[]) {
+  const encoder = new TextEncoder()
+  const chunks = lines.map((line) => encoder.encode(line))
+  let index = 0
+
+  return {
+    ok: true,
+    body: {
+      getReader: () => ({
+        read: vi.fn().mockImplementation(async () => {
+          if (index < chunks.length) {
+            return { done: false, value: chunks[index++] }
+          }
+          return { done: true, value: undefined }
+        })
+      })
+    }
+  } as Response
+}
+
 describe('AccountTestModal', () => {
   const originalFetch = global.fetch
 
@@ -188,5 +208,63 @@ describe('AccountTestModal', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('已通过 /v1/chat/completions 验证')
+  })
+
+  it('renders Grok timing metrics from a successful completion event', async () => {
+    getAvailableModelsMock.mockResolvedValue([
+      { id: 'grok-4.3', display_name: 'Grok 4.3' }
+    ])
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(createStreamResponse([
+        'data: {"type":"test_complete","success":true,"ttft_ms":345,"duration_ms":1234}\n'
+      ]))
+      .mockResolvedValueOnce(createStreamResponse([
+        'data: {"type":"test_complete","success":true}\n'
+      ])))
+
+    const wrapper = mount(AccountTestModal, {
+      props: {
+        show: true,
+        account: {
+          ...buildAccount(),
+          name: 'Grok OAuth',
+          platform: 'grok',
+          type: 'oauth'
+        }
+      },
+      global: {
+        stubs: {
+          BaseDialog: BaseDialogStub,
+          Select: SelectStub,
+          TextArea: TextAreaStub,
+          Icon: true
+        }
+      }
+	})
+
+	await flushPromises()
+    const modelSelect = wrapper.getComponent(SelectStub)
+    modelSelect.vm.$emit('update:modelValue', 'grok-4.3')
+    await flushPromises()
+	const startButton = wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+    if (!startButton) throw new Error('start test button not found')
+    expect(startButton.attributes('disabled')).toBeUndefined()
+    await startButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.testFirstToken')
+    expect(wrapper.text()).toContain('345ms')
+    expect(wrapper.text()).toContain('admin.accounts.testDuration')
+    expect(wrapper.text()).toContain('1.23s')
+
+    await startButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('admin.accounts.testCompleted')
+    expect(wrapper.text()).not.toContain('admin.accounts.testFirstToken')
+    expect(wrapper.text()).not.toContain('admin.accounts.testDuration')
   })
 })

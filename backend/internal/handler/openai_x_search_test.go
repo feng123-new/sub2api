@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -25,7 +26,7 @@ func TestBuildGrokXSearchResponsesBody(t *testing.T) {
 	require.Equal(t, xai.DefaultTextModel, gjson.GetBytes(body, "model").String())
 	require.Contains(t, gjson.GetBytes(body, "input").String(), "latest posts from xAI")
 	require.Contains(t, gjson.GetBytes(body, "input").String(), "Return ONLY valid JSON")
-	require.Equal(t, "x_search_call.action.sources", gjson.GetBytes(body, "include.0").String())
+	require.False(t, gjson.GetBytes(body, "include").Exists())
 	require.Equal(t, "required", gjson.GetBytes(body, "tool_choice").String())
 	require.Equal(t, "x_search", gjson.GetBytes(body, "tools.0.type").String())
 	require.Equal(t, "xai", gjson.GetBytes(body, "tools.0.allowed_x_handles.0").String())
@@ -45,6 +46,36 @@ func TestBuildGrokXSearchResponsesBodyAcceptsInputAlias(t *testing.T) {
 	require.Contains(t, gjson.GetBytes(body, "input").String(), "latest posts from xAI")
 }
 
+func TestBuildGrokXSearchResponsesBodyUsesWebSearchRoute(t *testing.T) {
+	t.Parallel()
+	body, err := buildGrokXSearchResponsesBody(grokStandaloneSearchRequest{
+		Query: "recent announcements",
+	}, "Web/grok-chat-fast")
+	require.NoError(t, err)
+	require.Equal(t, "Web/grok-chat-fast", gjson.GetBytes(body, "model").String())
+	require.False(t, gjson.GetBytes(body, "tools").Exists())
+	require.False(t, gjson.GetBytes(body, "tool_choice").Exists())
+}
+
+func TestValidateGrokWebXSearchFiltersRejectsUnsupportedFilters(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, validateGrokWebXSearchFilters(grokStandaloneSearchRequest{Query: "recent announcements"}))
+	require.Error(t, validateGrokWebXSearchFilters(grokStandaloneSearchRequest{Query: "recent announcements", AllowedXHandles: []string{"OpenAI"}}))
+	require.Error(t, validateGrokWebXSearchFilters(grokStandaloneSearchRequest{Query: "recent announcements", FromDate: "2026-08-01"}))
+	understandImages := true
+	require.Error(t, validateGrokWebXSearchFilters(grokStandaloneSearchRequest{Query: "recent announcements", EnableImageUnderstanding: &understandImages}))
+}
+
+func TestValidateGrokNativeXSearchResponseRequiresCompletedCallAndSources(t *testing.T) {
+	t.Parallel()
+	messageOnly := []byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}`)
+	require.Error(t, validateGrokNativeXSearchResponse(messageOnly, nil))
+
+	withSources := []byte(`{"status":"completed","output":[{"type":"x_search_call","status":"completed","action":{"sources":[{"type":"url","url":"https://x.com/OpenAI/status/1"}]}},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}`)
+	results := extractGrokWebSearchSources(withSources, 5)
+	require.NoError(t, validateGrokNativeXSearchResponse(withSources, results))
+}
+
 func TestResolveGrokStandaloneSearchModelUsesRuntimeDefault(t *testing.T) {
 	original := xai.RuntimeModelMappingOptions()
 	t.Cleanup(func() { xai.SetRuntimeModelMappingOptions(original) })
@@ -55,4 +86,18 @@ func TestResolveGrokStandaloneSearchModelUsesRuntimeDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "grok-4.6", model)
 	require.Equal(t, model, gjson.GetBytes(body, "model").String())
+}
+
+func TestResolveGrokStandaloneXSearchModelUsesDedicatedRoute(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, "grok-x-search", resolveGrokStandaloneXSearchModel())
+}
+
+func TestExtractGrokWebSearchSourcesReturnsEmptyArray(t *testing.T) {
+	t.Parallel()
+
+	results := extractGrokWebSearchSources([]byte(`{"status":"completed","output":[{"type":"x_search_call","status":"completed"}]}`), 1)
+	body, err := json.Marshal(results)
+	require.NoError(t, err)
+	require.JSONEq(t, `[]`, string(body))
 }
