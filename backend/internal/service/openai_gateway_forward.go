@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -19,6 +20,38 @@ import (
 
 // Forward forwards request to OpenAI API
 func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, account *Account, body []byte) (*OpenAIForwardResult, error) {
+	return s.forward(ctx, c, account, body, nil, nil)
+}
+
+func (s *OpenAIGatewayService) ForwardWithOptions(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	options OpenAIForwardOptions,
+) (*OpenAIForwardOutcome, error) {
+	outcome := &OpenAIForwardOutcome{Account: account}
+	if hedge := options.GrokStreamingHedge; hedge != nil && hedge.PrimaryReleaseFunc != nil {
+		copiedOptions := options
+		copiedHedge := *hedge
+		copiedHedge.PrimaryReleaseFunc = sync.OnceFunc(hedge.PrimaryReleaseFunc)
+		copiedOptions.GrokStreamingHedge = &copiedHedge
+		options = copiedOptions
+		defer copiedHedge.PrimaryReleaseFunc()
+	}
+	result, err := s.forward(ctx, c, account, body, &options, outcome)
+	outcome.Result = result
+	return outcome, err
+}
+
+func (s *OpenAIGatewayService) forward(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	options *OpenAIForwardOptions,
+	outcome *OpenAIForwardOutcome,
+) (*OpenAIForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
 	clearGrokResponsesClientToolMapping(c)
 	clearOpenAIResponsesClientToolMapping(c)
@@ -28,6 +61,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, err
 	}
 	startTime := time.Now()
+	if err := ValidateOpenAIImagePolicyPayload(body); err != nil {
+		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"type": "invalid_request_error", "message": err.Error(),
+		}})
+		return nil, err
+	}
 	// 固定渠道映射后的请求级 canonical body；账号 normalize/strip 不得改写跨 failover hint。
 	canonicalImageIntentBody := body
 
@@ -67,6 +107,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	} else if toolSchemaSanitized {
 		body = sanitizedToolBody
 	}
+	if account.Platform == PlatformOpenAI {
+		deferredToolsBody, deferredToolsChanged := normalizeOpenAIResponsesDeferredTools(body)
+		if deferredToolsChanged {
+			body = deferredToolsBody
+		}
+	}
 	if account.IsOpenAIOAuthLike() {
 		reasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningMode(body)
 		if reasoningErr != nil {
@@ -77,7 +123,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 	if account.IsOpenAIOAuthLike() && isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) {
-		liteBody, changed, liteErr := normalizeOpenAIResponsesLiteToolsPayload(body)
+		liteBody, changed, liteErr := normalizeOpenAIResponsesLitePayload(c, body)
 		if liteErr != nil {
 			param := "tools"
 			var validationErr *openAIResponsesLiteValidationError
@@ -122,6 +168,27 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return nil, err
 		}
 	}
+	apiKey := getAPIKeyFromContext(c)
+	imageGenerationAllowed := GroupAllowsImageGeneration(apiKeyGroup(apiKey))
+	body, groupPolicyImageIntent, groupImageDeclarationsStripped, err := applyOpenAIImageGenerationPolicyToRawPayload(
+		openAIResponsesEndpoint,
+		gjson.GetBytes(body, "model").String(),
+		body,
+		account.Platform,
+		imageGenerationAllowed,
+	)
+	if err != nil {
+		setOpsUpstreamError(c, http.StatusBadRequest, err.Error(), "")
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"type": "invalid_request_error", "message": err.Error(),
+		}})
+		return nil, err
+	}
+	if groupPolicyImageIntent && !imageGenerationAllowed {
+		MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalFeatureGate)
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "permission_error", "message": ImageGenerationPermissionMessage()}})
+		return nil, errors.New("image generation disabled for group")
+	}
 
 	nativeDeepSeekResponses := account.Platform == PlatformDeepseek &&
 		(account.GetAPIProtocol() == APIProtocolResponses || account.IsAdaptiveAPIProtocol())
@@ -141,6 +208,22 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	originalModel := reqModel
 
 	if account.Platform == PlatformGrok {
+		if options != nil && options.GrokStreamingHedge != nil && reqStream && account.Type == AccountTypeAPIKey {
+			result, winner, attemptedSecondaryIDs, hedgeErr := s.forwardGrokResponsesHedged(
+				ctx,
+				c,
+				account,
+				body,
+				originalModel,
+				startTime,
+				options.GrokStreamingHedge,
+			)
+			if outcome != nil {
+				outcome.Account = winner
+				outcome.AttemptedSecondaryAccountIDs = attemptedSecondaryIDs
+			}
+			return result, hedgeErr
+		}
 		return s.forwardGrokResponses(ctx, c, account, body, originalModel, reqStream, startTime)
 	}
 
@@ -222,7 +305,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, errors.New("openai ws v1 is temporarily unsupported; use ws v2")
 	}
 	if passthroughEnabled {
-		attemptImageIntentInvalidated := false
+		attemptImageIntentInvalidated := groupImageDeclarationsStripped
 		if isCodexCLI && codexImageGenerationExplicitToolPolicy == codexImageGenerationExplicitToolPolicyStrip {
 			strippedBody, changed, stripErr := stripOpenAIImageGenerationToolsFromRawPayload(body)
 			if stripErr != nil {
@@ -306,11 +389,6 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		disablePatch()
 	}
 
-	apiKey := getAPIKeyFromContext(c)
-	imageGenerationAllowed := GroupAllowsImageGeneration(nil)
-	if apiKey != nil {
-		imageGenerationAllowed = GroupAllowsImageGeneration(apiKey.Group)
-	}
 	codexImageGenerationBridgeEnabled := isCodexCLI &&
 		!isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) &&
 		imageGenerationAllowed &&
@@ -328,6 +406,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Stripped /responses image_generation tool for Codex client by account policy")
 		}
 		imageIntent = IsImageGenerationIntentMap(openAIResponsesEndpoint, reqModel, decoded)
+	} else if groupImageDeclarationsStripped {
+		imageIntent = groupPolicyImageIntent
 	} else {
 		imageIntent = canonicalImageIntent
 	}
@@ -688,6 +768,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		imageSizeTier = imageCfg.SizeTier
 		imageInputSize = imageCfg.InputSize
 	}
+	if err := s.runOpenAIContextPreflight(ctx, c, openAIContextPreflightEndpointResponses, body, upstreamModel); err != nil {
+		return nil, err
+	}
+
 	// Get access token
 	token, _, err := s.GetAccessToken(ctx, account)
 	if err != nil {
@@ -1020,6 +1104,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					if err != nil {
 						return nil, fmt.Errorf("serialize invalid_encrypted_content retry body: %w", err)
 					}
+					if err := s.runOpenAIContextPreflightSilently(ctx, c, openAIContextPreflightEndpointResponses, body, upstreamModel); err != nil {
+						return nil, err
+					}
 					httpInvalidEncryptedContentRetryTried = true
 					rejectedFieldRetryState.remember(body)
 					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after invalid_encrypted_content (account: %s)", account.Name)
@@ -1033,6 +1120,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 				body = retryBody
 				requestView = newOpenAIRequestView(body)
 				reqBody = nil
+				if err := s.runOpenAIContextPreflightSilently(ctx, c, openAIContextPreflightEndpointResponses, body, upstreamModel); err != nil {
+					return nil, err
+				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request after %s (account: %s)", reason, account.Name)
 				continue
 			}

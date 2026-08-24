@@ -118,6 +118,7 @@ const (
 	openAIGPT54LongContextInputThreshold   = 272000
 	openAIGPT54LongContextInputMultiplier  = 2.0
 	openAIGPT54LongContextOutputMultiplier = 1.5
+	openAIGPT55FastMultiplier              = 2.5
 )
 
 func normalizeBillingServiceTier(serviceTier string) string {
@@ -1086,6 +1087,13 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	}
 
 	return nil, fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
+}
+
+func (s *BillingService) GetExactModelContextLimits(model string) (ModelContextLimits, bool) {
+	if s == nil || s.pricingService == nil {
+		return ModelContextLimits{}, false
+	}
+	return s.pricingService.GetExactModelContextLimits(model)
 }
 
 // GetModelPricingWithChannel 获取模型定价，渠道配置的价格覆盖默认值

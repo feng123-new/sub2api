@@ -121,6 +121,75 @@ func TestFlattenResponsesNamespacesExcept_PreservesBuiltInNamespaceAndChoice(t *
 	require.Equal(t, map[string]any{"type": "namespace", "name": "image_gen"}, req["tool_choice"])
 }
 
+func TestFlattenResponsesNamespacesExcept_UsesAdditionalToolsDeclarationsForHistory(t *testing.T) {
+	req := map[string]any{
+		"tool_choice": map[string]any{"type": "namespace", "name": "collaboration"},
+		"input": []any{
+			map[string]any{"type": "additional_tools", "role": "developer", "tools": []any{
+				map[string]any{"type": "namespace", "name": "collaboration", "tools": []any{
+					map[string]any{"type": "function", "name": "spawn_agent"},
+				}},
+				map[string]any{"type": "namespace", "name": "image_gen", "tools": []any{
+					map[string]any{"type": "function", "name": "imagegen"},
+				}},
+			}},
+			map[string]any{"type": "function_call", "call_id": "call_1", "name": "spawn_agent", "namespace": "collaboration", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "name": "spawn_agent", "namespace": "collaboration", "output": "ok"},
+			map[string]any{"type": "function_call", "call_id": "call_image", "name": "imagegen", "namespace": "image_gen", "arguments": "{}"},
+			map[string]any{"type": "function_call_output", "call_id": "call_image", "name": "imagegen", "namespace": "image_gen", "output": "ok"},
+		},
+	}
+
+	names, changed, err := FlattenResponsesNamespacesExcept(req, map[string]bool{"image_gen": true})
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, ResponsesNamespaceName{Namespace: "collaboration", Name: "spawn_agent"}, names["collaboration__spawn_agent"])
+	require.NotContains(t, names, "image_gen__imagegen")
+	require.NotContains(t, req, "tools")
+	require.Equal(t, map[string]any{"type": "namespace", "name": "collaboration"}, req["tool_choice"])
+	input, ok := req["input"].([]any)
+	require.True(t, ok)
+	require.Len(t, input, 5)
+	additionalItem, ok := input[0].(map[string]any)
+	require.True(t, ok)
+	additional, ok := additionalItem["tools"].([]any)
+	require.True(t, ok)
+	require.Len(t, additional, 2)
+	collaboration, ok := additional[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "collaboration", collaboration["name"])
+	imageGen, ok := additional[1].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "image_gen", imageGen["name"])
+	for _, index := range []int{1, 2} {
+		item, ok := input[index].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "collaboration__spawn_agent", item["name"])
+		require.NotContains(t, item, "namespace")
+	}
+	for _, index := range []int{3, 4} {
+		item, ok := input[index].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "imagegen", item["name"])
+		require.Equal(t, "image_gen", item["namespace"])
+	}
+}
+
+func TestFlattenResponsesNamespaces_AdditionalToolsNamespaceRetainsFlatNameCollision(t *testing.T) {
+	req := map[string]any{
+		"tools": []any{map[string]any{"type": "function", "name": "collaboration__spawn_agent"}},
+		"input": []any{map[string]any{"type": "additional_tools", "tools": []any{
+			map[string]any{"type": "namespace", "name": "collaboration", "tools": []any{
+				map[string]any{"type": "function", "name": "spawn_agent"},
+			}},
+		}}},
+	}
+
+	_, _, err := FlattenResponsesNamespaces(req)
+	require.ErrorContains(t, err, "conflicts with a top-level tool")
+}
+
 func TestFlattenResponsesNamespaces_RejectsNamespaceCollision(t *testing.T) {
 	req := map[string]any{"tools": []any{
 		map[string]any{"type": "namespace", "name": "a", "tools": []any{
@@ -161,4 +230,44 @@ func TestRestoreResponsesNamespaceCalls_RewritesLifecycleItems(t *testing.T) {
 			require.JSONEq(t, `{"type":"`+eventType+`","item":{"type":"function_call","name":"spawn_agent","namespace":"collaboration","arguments":"{}"}}`, string(got))
 		})
 	}
+}
+
+func TestRestoreResponsesNamespaceCalls_PreservesExactNumbersAfterRewrite(t *testing.T) {
+	tests := []struct {
+		name   string
+		number string
+	}{
+		{name: "integer beyond float64 exact range", number: "9007199254740993"},
+		{name: "large negative integer", number: "-9007199254740993123456789"},
+		{name: "high precision decimal", number: "12345678901234567890.123456789"},
+		{name: "high precision exponent", number: "1.234567890123456789e+123"},
+	}
+	names := map[string]ResponsesNamespaceName{
+		"collaboration__spawn_agent": {Namespace: "collaboration", Name: "spawn_agent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := []byte(`{"type":"function_call","name":"collaboration__spawn_agent","arguments":"{}","marker":` + tt.number + `}`)
+
+			got, changed, err := RestoreResponsesNamespaceCalls(payload, names)
+
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.Contains(t, string(got), `"marker":`+tt.number, string(got))
+		})
+	}
+}
+
+func TestRestoreResponsesNamespaceCalls_RejectsTrailingJSONValue(t *testing.T) {
+	payload := []byte(`{"type":"function_call","name":"collaboration__spawn_agent"} {"extra":true}`)
+	names := map[string]ResponsesNamespaceName{
+		"collaboration__spawn_agent": {Namespace: "collaboration", Name: "spawn_agent"},
+	}
+
+	got, changed, err := RestoreResponsesNamespaceCalls(payload, names)
+
+	require.Error(t, err)
+	require.False(t, changed)
+	require.Equal(t, payload, got)
 }

@@ -1,10 +1,70 @@
 package service
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
 )
+
+// OpenAIImagePolicyDuplicateKeyError is the base interface for duplicate-key
+// errors that expose the offending key and its JSON context path.
+type OpenAIImagePolicyDuplicateKeyError interface {
+	error
+	DuplicateKey() string
+	ContextPath() string
+}
+
+// OpenAIImagePolicyDuplicateRootKeyError identifies an ambiguous root field
+// whose first-value raw view would disagree with encoding/json's last value.
+type OpenAIImagePolicyDuplicateRootKeyError struct {
+	Key string
+}
+
+func (e *OpenAIImagePolicyDuplicateRootKeyError) Error() string {
+	return fmt.Sprintf("duplicate root key %q is not allowed in an OpenAI image-policy payload", e.Key)
+}
+
+func (e *OpenAIImagePolicyDuplicateRootKeyError) DuplicateKey() string {
+	if e == nil {
+		return ""
+	}
+	return e.Key
+}
+
+func (e *OpenAIImagePolicyDuplicateRootKeyError) ContextPath() string {
+	if e == nil {
+		return ""
+	}
+	return "root"
+}
+
+// OpenAIImagePolicyDuplicateNestedKeyError identifies a duplicate key in a nested object.
+type OpenAIImagePolicyDuplicateNestedKeyError struct {
+	Key  string
+	Path string
+}
+
+func (e *OpenAIImagePolicyDuplicateNestedKeyError) Error() string {
+	return fmt.Sprintf("duplicate key %q at path %q is not allowed in an OpenAI image-policy payload", e.Key, e.ContextPath())
+}
+
+func (e *OpenAIImagePolicyDuplicateNestedKeyError) DuplicateKey() string {
+	if e == nil {
+		return ""
+	}
+	return e.Key
+}
+
+func (e *OpenAIImagePolicyDuplicateNestedKeyError) ContextPath() string {
+	if e == nil {
+		return ""
+	}
+	return e.Path
+}
 
 const (
 	openAIResponsesEndpoint          = "/v1/responses"
@@ -34,6 +94,75 @@ func ImageGenerationPermissionMessage() string {
 // GroupAllowsImageGeneration preserves ungrouped-key behavior and enforces the flag when a group is present.
 func GroupAllowsImageGeneration(group *Group) bool {
 	return group == nil || group.AllowImageGeneration
+}
+
+// ValidateOpenAIImagePolicyPayload rejects duplicate object keys that could be
+// interpreted differently by raw classification and map-backed mutation.
+func ValidateOpenAIImagePolicyPayload(body []byte) error {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := validateOpenAIImagePolicyJSONValue(decoder, "root"); err != nil {
+		if duplicateErr, ok := err.(OpenAIImagePolicyDuplicateKeyError); ok {
+			return duplicateErr
+		}
+	}
+	return nil
+}
+
+func validateOpenAIImagePolicyJSONValue(decoder *json.Decoder, path string) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return fmt.Errorf("invalid JSON object key at path %q", path)
+			}
+			if _, exists := seen[key]; exists && (path != "root" || key != "previous_response_id") {
+				if path == "root" {
+					return &OpenAIImagePolicyDuplicateRootKeyError{Key: key}
+				}
+				return &OpenAIImagePolicyDuplicateNestedKeyError{Key: key, Path: path}
+			}
+			seen[key] = struct{}{}
+			if err := validateOpenAIImagePolicyJSONValue(decoder, appendOpenAIImagePolicyObjectPath(path, key)); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	case '[':
+		for index := 0; decoder.More(); index++ {
+			if err := validateOpenAIImagePolicyJSONValue(decoder, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+		_, err = decoder.Token()
+		return err
+	default:
+		return fmt.Errorf("unexpected JSON delimiter %q at path %q", delimiter, path)
+	}
+}
+
+func appendOpenAIImagePolicyObjectPath(path string, key string) string {
+	return path + "[" + strconv.QuoteToASCII(key) + "]"
 }
 
 // IsImageGenerationIntent classifies requests that can produce generated images.
@@ -129,6 +258,91 @@ func IsImageGenerationIntentForPlatform(endpoint string, requestedModel string, 
 	return isExplicitGrokImageGenerationIntent(endpoint, requestedModel, body)
 }
 
+// IsRequiredImageGenerationIntent classifies requests that cannot be satisfied
+// after image-only capabilities are removed.
+func IsRequiredImageGenerationIntent(endpoint string, requestedModel string, body []byte) bool {
+	if IsImageGenerationEndpoint(endpoint) || isOpenAIImageGenerationModel(requestedModel) {
+		return true
+	}
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return false
+	}
+
+	var model, tools, input, toolChoice gjson.Result
+	var modelSeen, toolsSeen, inputSeen, toolChoiceSeen bool
+	parseRawJSONView(body).ForEach(func(key, value gjson.Result) bool {
+		switch key.Str {
+		case "model":
+			if !modelSeen {
+				modelSeen = true
+				model = value
+			}
+		case "tools":
+			if !toolsSeen {
+				toolsSeen = true
+				tools = value
+			}
+		case "input":
+			if !inputSeen {
+				inputSeen = true
+				input = value
+			}
+		case "tool_choice":
+			if !toolChoiceSeen {
+				toolChoiceSeen = true
+				toolChoice = value
+			}
+		}
+		return !modelSeen || !toolsSeen || !inputSeen || !toolChoiceSeen
+	})
+
+	if isOpenAIImageGenerationModel(openAIJSONString(model)) {
+		return true
+	}
+	if openAIJSONToolChoiceSelectsExplicitImageGeneration(toolChoice) {
+		return true
+	}
+	if openAIJSONString(toolChoice) != "required" {
+		return false
+	}
+	return openAIJSONAllAvailableToolsAreImageOnly(tools, input)
+}
+
+// IsRequiredImageGenerationIntentForPlatform preserves Grok's native image
+// declaration semantics while applying the required-intent rule everywhere.
+func IsRequiredImageGenerationIntentForPlatform(endpoint string, requestedModel string, body []byte, platform string) bool {
+	if strings.EqualFold(strings.TrimSpace(platform), PlatformGrok) &&
+		IsImageGenerationIntentForPlatform(endpoint, requestedModel, body, platform) {
+		return true
+	}
+	return IsRequiredImageGenerationIntent(endpoint, requestedModel, body)
+}
+
+func applyOpenAIImageGenerationPolicyToRawPayload(
+	endpoint string,
+	requestedModel string,
+	payload []byte,
+	platform string,
+	imageGenerationAllowed bool,
+) ([]byte, bool, bool, error) {
+	if err := ValidateOpenAIImagePolicyPayload(payload); err != nil {
+		return payload, false, false, err
+	}
+	imageIntent := IsImageGenerationIntentForPlatform(endpoint, requestedModel, payload, platform)
+	if imageGenerationAllowed {
+		return payload, imageIntent, false, nil
+	}
+	if IsRequiredImageGenerationIntentForPlatform(endpoint, requestedModel, payload, platform) {
+		return payload, true, false, nil
+	}
+	updated, changed, err := stripOpenAIImageGenerationToolsFromValidatedRawPayload(payload)
+	if err != nil || !changed {
+		return payload, imageIntent, false, err
+	}
+	imageIntent = IsImageGenerationIntentForPlatform(endpoint, requestedModel, updated, platform)
+	return updated, imageIntent, true, nil
+}
+
 func isExplicitGrokImageGenerationIntent(endpoint string, requestedModel string, body []byte) bool {
 	if IsImageGenerationEndpoint(endpoint) || isOpenAIImageGenerationModel(requestedModel) {
 		return true
@@ -212,11 +426,7 @@ func openAIJSONToolsContainImageGeneration(tools gjson.Result) bool {
 	}
 	found := false
 	tools.ForEach(func(_, item gjson.Result) bool {
-		if isOpenAIImageGenerationType(openAIJSONString(item.Get("type"))) {
-			found = true
-			return false
-		}
-		if isImageGenNamespaceTool(item) {
+		if openAIJSONToolDeclaresImageGeneration(item) {
 			found = true
 			return false
 		}
@@ -252,6 +462,26 @@ func isImageGenNamespaceTool(tool gjson.Result) bool {
 		isOpenAIImageGenNamespaceName(openAIJSONString(tool.Get("name")))
 }
 
+func openAIJSONToolDeclaresImageGeneration(tool gjson.Result) bool {
+	if !tool.IsObject() {
+		return false
+	}
+	if isOpenAIImageGenerationType(openAIJSONString(tool.Get("type"))) || isImageGenNamespaceTool(tool) {
+		return true
+	}
+	if isOpenAIImageGenFunctionReference(
+		openAIJSONString(tool.Get("namespace")),
+		openAIJSONString(tool.Get("name")),
+	) {
+		return true
+	}
+	function := tool.Get("function")
+	return function.IsObject() && isOpenAIImageGenFunctionReference(
+		openAIJSONString(function.Get("namespace")),
+		openAIJSONString(function.Get("name")),
+	)
+}
+
 // openAIJSONInputContainsImageGenTool scans Responses input items for
 // additional_tools entries that declare the image_gen namespace. This covers
 // the "Responses Lite" format where tools are embedded inside input items
@@ -269,6 +499,42 @@ func openAIJSONInputContainsImageGenTool(input gjson.Result) bool {
 		return !found
 	})
 	return found
+}
+
+func openAIJSONAllAvailableToolsAreImageOnly(tools gjson.Result, input gjson.Result) bool {
+	total, imageOnly := openAIJSONCountImageOnlyTools(tools)
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			if openAIJSONString(item.Get("type")) != "additional_tools" {
+				return true
+			}
+			itemTotal, itemImageOnly := openAIJSONCountImageOnlyTools(item.Get("tools"))
+			total += itemTotal
+			imageOnly += itemImageOnly
+			return true
+		})
+	}
+	return total > 0 && total == imageOnly
+}
+
+func openAIJSONCountImageOnlyTools(tools gjson.Result) (int, int) {
+	if !tools.IsArray() {
+		return 0, 0
+	}
+	total := 0
+	imageOnly := 0
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		total++
+		if openAIJSONToolIsImageOnly(tool) {
+			imageOnly++
+		}
+		return true
+	})
+	return total, imageOnly
+}
+
+func openAIJSONToolIsImageOnly(tool gjson.Result) bool {
+	return openAIJSONToolDeclaresImageGeneration(tool)
 }
 
 func openAIRequestBodyHasImageGenerationDeclaration(body []byte) bool {
@@ -313,7 +579,8 @@ func openAIJSONToolChoiceSelectsImageGeneration(choice gjson.Result) bool {
 		return false
 	}
 	if choice.Type == gjson.String {
-		return isOpenAIImageGenerationType(choice.String())
+		return isOpenAIImageGenerationType(choice.String()) ||
+			isOpenAIImageGenFunctionReference("", choice.String())
 	}
 	if !choice.IsObject() {
 		return false
@@ -327,11 +594,21 @@ func openAIJSONToolChoiceSelectsImageGeneration(choice gjson.Result) bool {
 			isOpenAIImageGenNamespaceName(openAIJSONString(choice.Get("namespace")))) {
 		return true
 	}
+	if isOpenAIImageGenFunctionReference(
+		openAIJSONString(choice.Get("namespace")),
+		openAIJSONString(choice.Get("name")),
+	) {
+		return true
+	}
 	if tool := choice.Get("tool"); tool.IsObject() && openAIJSONToolChoiceSelectsImageGeneration(tool) {
 		return true
 	}
-	if isOpenAIImageGenerationType(openAIJSONString(choice.Get("function.name"))) {
-		return true
+	if function := choice.Get("function"); function.IsObject() {
+		return isOpenAIImageGenerationType(openAIJSONString(function.Get("name"))) ||
+			isOpenAIImageGenFunctionReference(
+				openAIJSONString(function.Get("namespace")),
+				openAIJSONString(function.Get("name")),
+			)
 	}
 	return false
 }
@@ -378,7 +655,7 @@ func isOpenAIImageGenFunctionReference(namespace string, name string) bool {
 func openAIAnyToolChoiceSelectsImageGeneration(choice any) bool {
 	switch v := choice.(type) {
 	case string:
-		return isOpenAIImageGenerationType(v)
+		return isOpenAIImageGenerationType(v) || isOpenAIImageGenFunctionReference("", v)
 	case map[string]any:
 		choiceType := strings.TrimSpace(firstNonEmptyString(v["type"]))
 		if isOpenAIImageGenerationType(choiceType) {
@@ -389,11 +666,21 @@ func openAIAnyToolChoiceSelectsImageGeneration(choice any) bool {
 				isOpenAIImageGenNamespaceName(firstNonEmptyString(v["namespace"]))) {
 			return true
 		}
+		if isOpenAIImageGenFunctionReference(
+			firstNonEmptyString(v["namespace"]),
+			firstNonEmptyString(v["name"]),
+		) {
+			return true
+		}
 		if tool, ok := v["tool"].(map[string]any); ok && openAIAnyToolChoiceSelectsImageGeneration(tool) {
 			return true
 		}
-		if fn, ok := v["function"].(map[string]any); ok && isOpenAIImageGenerationType(firstNonEmptyString(fn["name"])) {
-			return true
+		if function, ok := v["function"].(map[string]any); ok {
+			return isOpenAIImageGenerationType(firstNonEmptyString(function["name"])) ||
+				isOpenAIImageGenFunctionReference(
+					firstNonEmptyString(function["namespace"]),
+					firstNonEmptyString(function["name"]),
+				)
 		}
 	}
 	return false

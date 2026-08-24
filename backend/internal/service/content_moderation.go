@@ -19,6 +19,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
@@ -2067,11 +2069,11 @@ func contentModerationEmailVariables(log *ContentModerationLog, cfg *ContentMode
 
 func (s *ContentModerationService) siteName(ctx context.Context) string {
 	if s == nil || s.settingRepo == nil {
-		return "Sub2API"
+		return "畅联服务"
 	}
 	name, err := s.settingRepo.GetValue(ctx, SettingKeySiteName)
 	if err != nil || strings.TrimSpace(name) == "" {
-		return "Sub2API"
+		return "畅联服务"
 	}
 	return strings.TrimSpace(name)
 }
@@ -2854,14 +2856,89 @@ func matchBlockedKeyword(text string, keywords []string) (string, bool) {
 	}
 	lower := strings.ToLower(text)
 	for _, kw := range keywords {
-		if kw == "" {
+		normalizedKeyword := strings.ToLower(strings.TrimSpace(kw))
+		if normalizedKeyword == "" {
 			continue
 		}
-		if strings.Contains(lower, strings.ToLower(kw)) {
+		if !blockedKeywordUsesBoundaries(normalizedKeyword) {
+			if strings.Contains(lower, normalizedKeyword) {
+				return kw, true
+			}
+			continue
+		}
+		if containsBlockedKeywordWithBoundaries(lower, normalizedKeyword) {
 			return kw, true
 		}
 	}
 	return "", false
+}
+
+func blockedKeywordUsesBoundaries(keyword string) bool {
+	hasLatinLetter := false
+	for _, currentRune := range keyword {
+		if !unicode.IsLetter(currentRune) {
+			continue
+		}
+		if !unicode.Is(unicode.Latin, currentRune) {
+			return false
+		}
+		hasLatinLetter = true
+	}
+	return hasLatinLetter
+}
+
+func containsBlockedKeywordWithBoundaries(text string, keyword string) bool {
+	for searchFrom := 0; searchFrom < len(text); {
+		relativeStart := strings.Index(text[searchFrom:], keyword)
+		if relativeStart < 0 {
+			return false
+		}
+		start := searchFrom + relativeStart
+		end := start + len(keyword)
+		if blockedKeywordHasRequiredBoundaries(text, keyword, start, end) {
+			return true
+		}
+		_, size := utf8.DecodeRuneInString(text[start:])
+		searchFrom = start + size
+	}
+	return false
+}
+
+func blockedKeywordHasRequiredBoundaries(text string, keyword string, start int, end int) bool {
+	if blockedKeywordRequiresBoundaryBefore(keyword) && !blockedKeywordBoundaryBefore(text, start) {
+		return false
+	}
+	return !blockedKeywordRequiresBoundaryAfter(keyword) || blockedKeywordBoundaryAfter(text, end)
+}
+
+func blockedKeywordRequiresBoundaryBefore(keyword string) bool {
+	currentRune, _ := utf8.DecodeRuneInString(keyword)
+	return isBlockedKeywordWordRune(currentRune)
+}
+
+func blockedKeywordRequiresBoundaryAfter(keyword string) bool {
+	currentRune, _ := utf8.DecodeLastRuneInString(keyword)
+	return isBlockedKeywordWordRune(currentRune)
+}
+
+func blockedKeywordBoundaryBefore(text string, offset int) bool {
+	if offset <= 0 {
+		return true
+	}
+	currentRune, _ := utf8.DecodeLastRuneInString(text[:offset])
+	return !isBlockedKeywordWordRune(currentRune)
+}
+
+func blockedKeywordBoundaryAfter(text string, offset int) bool {
+	if offset >= len(text) {
+		return true
+	}
+	currentRune, _ := utf8.DecodeRuneInString(text[offset:])
+	return !isBlockedKeywordWordRune(currentRune)
+}
+
+func isBlockedKeywordWordRune(currentRune rune) bool {
+	return currentRune == '_' || unicode.IsLetter(currentRune) || unicode.IsDigit(currentRune)
 }
 
 func normalizeModerationAPIKeys(keys []string) []string {

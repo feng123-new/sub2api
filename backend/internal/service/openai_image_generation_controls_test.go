@@ -28,12 +28,16 @@ func TestOpenAIGatewayServiceForward_RejectsDisabledImageGenerationIntents(t *te
 			body: []byte(`{"model":"gpt-image-2","input":"draw"}`),
 		},
 		{
-			name: "image tool",
-			body: []byte(`{"model":"gpt-5.4","input":"draw","tools":[{"type":"image_generation"}]}`),
+			name: "required choice with only image tools",
+			body: []byte(`{"model":"gpt-5.4","input":"draw","tools":[{"type":"image_generation"}],"tool_choice":"required"}`),
 		},
 		{
 			name: "image tool choice",
-			body: []byte(`{"model":"gpt-5.4","input":"draw","tool_choice":{"type":"image_generation"}}`),
+			body: []byte(`{"model":"gpt-5.4","input":"draw","tools":[{"type":"image_generation"}],"tool_choice":{"type":"image_generation"}}`),
+		},
+		{
+			name: "image namespace function choice",
+			body: []byte(`{"model":"gpt-5.5","input":"draw","tools":[{"type":"function","name":"image_gen.imagegen"}],"tool_choice":{"type":"function","name":"image_gen.imagegen"}}`),
 		},
 	}
 
@@ -78,6 +82,264 @@ func TestOpenAIGatewayServiceForward_DisabledGroupAllowsTextOnlyResponses(t *tes
 	require.Equal(t, 2, result.Usage.OutputTokens)
 	require.Equal(t, 0, result.ImageCount)
 	require.NotNil(t, upstream.lastReq)
+}
+
+func TestOpenAIGatewayServiceForward_DisabledGroupStripsResponsesLiteOptionalImageNamespace(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_lite_text","model":"gpt-5.5","usage":{"input_tokens":3,"output_tokens":2}}`)),
+	}}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, recorder := newOpenAIImageGenerationControlTestContext(false, "codex_cli_rs/0.144.1")
+	c.Request.Header.Set(responsesLiteHeader, "true")
+	account := newOpenAIImageGenerationControlTestAccount()
+	account.Type = AccountTypeOAuth
+	account.Credentials = map[string]any{
+		"access_token":       "oauth-token",
+		"chatgpt_account_id": "chatgpt-account",
+	}
+
+	history := strings.Repeat("history ", 12*1024)
+	body, err := json.Marshal(map[string]any{
+		"model":        "gpt-5.5",
+		"stream":       false,
+		"instructions": "continue",
+		"tools": []any{
+			map[string]any{"type": "function", "name": "shell", "parameters": map[string]any{"type": "object"}},
+			map[string]any{"type": "namespace", "name": "image_gen", "tools": []any{
+				map[string]any{"type": "function", "name": "imagegen"},
+			}},
+		},
+		"input": []any{
+			map[string]any{"type": "message", "role": "assistant", "content": history},
+			map[string]any{"type": "message", "role": "user", "content": "continue the analysis"},
+		},
+		"tool_choice": "auto",
+	})
+	require.NoError(t, err)
+	require.Greater(t, len(body), 92*1024)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.NotNil(t, upstream.lastReq)
+	require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="image_gen")`).Exists())
+	require.False(t, gjson.GetBytes(upstream.lastBody, `input.#(type=="additional_tools").tools.#(name=="image_gen")`).Exists())
+	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="shell")`).Exists())
+	require.Equal(t, history, gjson.GetBytes(upstream.lastBody, "input.0.content").String())
+	require.Equal(t, "continue the analysis", gjson.GetBytes(upstream.lastBody, "input.1.content").String())
+}
+
+func TestOpenAIGatewayServiceForward_DisabledGroupStripsOptionalImageDeclarations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name               string
+		body               []byte
+		wantToolChoice     string
+		wantHistoryContent string
+	}{
+		{
+			name: "passive top-level image tool",
+			body: []byte(`{
+				"model":"gpt-5.5",
+				"stream":false,
+				"tools":[
+					{"type":"function","name":"shell","parameters":{"type":"object"}},
+					{"type":"image_generation","model":"gpt-image-2"}
+				],
+				"input":"write code",
+				"tool_choice":"auto"
+			}`),
+			wantToolChoice: "auto",
+		},
+		{
+			name: "required choice with mixed tools",
+			body: []byte(`{
+				"model":"gpt-5.5",
+				"stream":false,
+				"tools":[
+					{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]},
+					{"type":"function","name":"lookup","parameters":{"type":"object"}}
+				],
+				"input":[
+					{"type":"message","role":"assistant","content":"prior answer"},
+					{"type":"message","role":"user","content":"continue"}
+				],
+				"tool_choice":"required"
+			}`),
+			wantToolChoice:     "required",
+			wantHistoryContent: "prior answer",
+		},
+		{
+			name: "flattened image function",
+			body: []byte(`{
+				"model":"gpt-5.5",
+				"stream":false,
+				"tools":[
+					{"type":"function","name":"lookup","parameters":{"type":"object"}},
+					{"type":"function","name":"image_gen.imagegen","parameters":{"type":"object"}}
+				],
+				"input":"write code",
+				"tool_choice":"auto"
+			}`),
+			wantToolChoice: "auto",
+		},
+		{
+			name: "nested image function",
+			body: []byte(`{
+				"model":"gpt-5.5",
+				"stream":false,
+				"tools":[
+					{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}},
+					{"type":"function","function":{"name":"image_gen.imagegen","parameters":{"type":"object"}}}
+				],
+				"input":"write code",
+				"tool_choice":"auto"
+			}`),
+			wantToolChoice: "auto",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_optional_text","model":"gpt-5.5","usage":{"input_tokens":3,"output_tokens":2}}`)),
+			}}
+			svc := newOpenAIImageGenerationControlTestService(upstream)
+			c, recorder := newOpenAIImageGenerationControlTestContext(false, "unit-test-agent/1.0")
+			account := newOpenAIImageGenerationControlTestAccount()
+
+			result, err := svc.Forward(context.Background(), c, account, tt.body)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, http.StatusOK, recorder.Code)
+			require.NotNil(t, upstream.lastReq)
+			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="image_gen")`).Exists())
+			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="image_gen.imagegen")`).Exists())
+			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(function.name=="image_gen.imagegen")`).Exists())
+			require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="function")`).Exists())
+			require.Equal(t, tt.wantToolChoice, gjson.GetBytes(upstream.lastBody, "tool_choice").String())
+			if tt.wantHistoryContent != "" {
+				require.Equal(t, tt.wantHistoryContent, gjson.GetBytes(upstream.lastBody, "input.0.content").String())
+			}
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceForward_GrokDisabledGroupStripsOptionalImageFunctions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "flattened function",
+			body: []byte(`{"model":"grok-4.5","stream":false,"tools":[{"type":"function","name":"lookup"},{"type":"function","name":"image_gen.imagegen"}],"input":"write code","tool_choice":"auto"}`),
+		},
+		{
+			name: "nested function",
+			body: []byte(`{"model":"grok-4.5","stream":false,"tools":[{"type":"function","function":{"name":"lookup"}},{"type":"function","function":{"name":"image_gen.imagegen"}}],"input":"write code","tool_choice":"auto"}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"resp_grok_text","model":"grok-4.5","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+			}}
+			svc := newOpenAIImageGenerationControlTestService(upstream)
+			c, recorder := newOpenAIImageGenerationControlTestContext(false, "unit-test-agent/1.0")
+			account := newOpenAIImageGenerationControlTestAccount()
+			account.Platform = PlatformGrok
+			account.Credentials = map[string]any{
+				"api_key":  "xai-test-key",
+				"base_url": "https://api.x.ai/v1",
+			}
+
+			result, err := svc.Forward(context.Background(), c, account, tt.body)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, http.StatusOK, recorder.Code)
+			require.NotNil(t, upstream.lastReq)
+			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="image_gen.imagegen")`).Exists())
+			require.False(t, gjson.GetBytes(upstream.lastBody, `tools.#(function.name=="image_gen.imagegen")`).Exists())
+			require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(name=="lookup")`).Exists() ||
+				gjson.GetBytes(upstream.lastBody, `tools.#(function.name=="lookup")`).Exists())
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceForward_RejectsDuplicateImagePolicyRootKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		key  string
+		body []byte
+	}{
+		{name: "model", key: "model", body: []byte(`{"model":"gpt-5.5","model":"gpt-image-2","input":"write code"}`)},
+		{name: "tools", key: "tools", body: []byte(`{"model":"gpt-5.5","tools":[{"type":"function","name":"lookup"}],"tools":[{"type":"function","name":"image_gen.imagegen"}],"input":"write code","tool_choice":"auto"}`)},
+		{name: "input", key: "input", body: []byte(`{"model":"gpt-5.5","input":"write code","input":[{"type":"additional_tools","tools":[{"type":"function","name":"image_gen.imagegen"}]}],"tool_choice":"auto"}`)},
+		{name: "tool choice", key: "tool_choice", body: []byte(`{"model":"gpt-5.5","input":"write code","tool_choice":"auto","tool_choice":{"type":"function","name":"image_gen.imagegen"}}`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"id":"unexpected","usage":{"input_tokens":1,"output_tokens":1}}`)),
+			}}
+			svc := newOpenAIImageGenerationControlTestService(upstream)
+			c, recorder := newOpenAIImageGenerationControlTestContext(false, "unit-test-agent/1.0")
+			account := newOpenAIImageGenerationControlTestAccount()
+
+			result, err := svc.Forward(context.Background(), c, account, tt.body)
+
+			require.Error(t, err)
+			require.Nil(t, result)
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			require.Equal(t, "invalid_request_error", gjson.GetBytes(recorder.Body.Bytes(), "error.type").String())
+			require.Contains(t, recorder.Body.String(), `duplicate root key \"`+tt.key+`\"`)
+			require.Nil(t, upstream.lastReq)
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceForward_EnabledGroupPreservesOptionalImageDeclarations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_optional_image","model":"gpt-5.5","usage":{"input_tokens":3,"output_tokens":2}}`)),
+	}}
+	svc := newOpenAIImageGenerationControlTestService(upstream)
+	c, recorder := newOpenAIImageGenerationControlTestContext(true, "unit-test-agent/1.0")
+	account := newOpenAIImageGenerationControlTestAccount()
+	body := []byte(`{"model":"gpt-5.5","stream":false,"tools":[{"type":"image_generation"}],"input":"draw if useful","tool_choice":"auto"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.True(t, gjson.GetBytes(upstream.lastBody, `tools.#(type=="image_generation")`).Exists())
+	require.Equal(t, "auto", gjson.GetBytes(upstream.lastBody, "tool_choice").String())
 }
 
 func TestOpenAIGatewayServiceForward_CodexImageInjectionRespectsGroupCapability(t *testing.T) {

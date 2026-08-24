@@ -752,9 +752,15 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
 		"reasoning":{"effort":"high"},
 		"parallel_tool_calls":true,
 		"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"},
-		"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}],
 		"input":[
-			{"type":"additional_tools","role":"developer","tools":[{"type":"custom","name":"exec","description":"Execute code-mode tools, including image_gen.imagegen."}]},
+			{"type":"additional_tools","role":"developer","tools":[
+				{"type":"custom","name":"exec","description":"Execute code-mode tools, including image_gen.imagegen."},
+				{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]},
+				{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]}
+			]},
+			{"type":"function_call","call_id":"call_lite_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_lite_1","name":"spawn_agent","namespace":"collaboration","output":"ok"},
+			{"type":"function_call","call_id":"call_lite_image","name":"imagegen","namespace":"image_gen","arguments":"{}"},
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"draw a cat"}]}
 		],
 		"tool_choice":{"type":"namespace","name":"collaboration"}
@@ -826,12 +832,19 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_CodexImageBridge
 	require.Contains(t, gjson.Get(litePayload, `input.#(type=="additional_tools").tools.0.description`).String(), "image_gen.imagegen")
 	require.False(t, gjson.Get(litePayload, `tools.#(type=="namespace")`).Exists())
 	require.Equal(t, "collaboration", gjson.Get(litePayload, `input.#(type=="additional_tools").tools.1.name`).String())
+	require.Equal(t, "image_gen", gjson.Get(litePayload, `input.#(type=="additional_tools").tools.2.name`).String())
 	require.Equal(t, "namespace", gjson.Get(litePayload, "tool_choice.type").String())
 	require.Equal(t, "collaboration", gjson.Get(litePayload, "tool_choice.name").String())
 	require.Equal(t, "high", gjson.Get(litePayload, "reasoning.effort").String())
 	require.Equal(t, "all_turns", gjson.Get(litePayload, "reasoning.context").String())
 	require.True(t, gjson.Get(litePayload, "parallel_tool_calls").Exists())
 	require.False(t, gjson.Get(litePayload, "parallel_tool_calls").Bool())
+	require.Equal(t, "collaboration__spawn_agent", gjson.Get(litePayload, "input.1.name").String())
+	require.False(t, gjson.Get(litePayload, "input.1.namespace").Exists())
+	require.Equal(t, "collaboration__spawn_agent", gjson.Get(litePayload, "input.2.name").String())
+	require.False(t, gjson.Get(litePayload, "input.2.namespace").Exists())
+	require.Equal(t, "imagegen", gjson.Get(litePayload, "input.3.name").String())
+	require.Equal(t, "image_gen", gjson.Get(litePayload, "input.3.namespace").String())
 
 	functionPayload := requestToJSONString(captureConn.writes[2])
 	require.True(t, gjson.Get(functionPayload, `tools.#(name=="image_gen.imagegen")`).Exists())
@@ -1219,8 +1232,12 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughHeade
 		"reasoning":{"effort":"medium","context":"current_turn"},
 		"parallel_tool_calls":true,
 		"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"},
-		"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}],
-		"input":[{"type":"message","role":"user","content":"hello"}],
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}]},
+			{"type":"message","role":"user","content":"hello"},
+			{"type":"function_call","call_id":"call_ws_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_ws_1","name":"spawn_agent","namespace":"collaboration","output":"ok"}
+		],
 		"tool_choice":{"type":"namespace","name":"collaboration"}
 	}`))
 	cancelWrite()
@@ -1255,6 +1272,10 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughHeade
 	require.Equal(t, "all_turns", gjson.Get(forwarded, "reasoning.context").String())
 	require.True(t, gjson.Get(forwarded, "parallel_tool_calls").Exists())
 	require.False(t, gjson.Get(forwarded, "parallel_tool_calls").Bool())
+	require.Equal(t, "collaboration__spawn_agent", gjson.Get(forwarded, "input.2.name").String())
+	require.False(t, gjson.Get(forwarded, "input.2.namespace").Exists())
+	require.Equal(t, "collaboration__spawn_agent", gjson.Get(forwarded, "input.3.name").String())
+	require.False(t, gjson.Get(forwarded, "input.3.namespace").Exists())
 }
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRelaysHTTPStream(t *testing.T) {
