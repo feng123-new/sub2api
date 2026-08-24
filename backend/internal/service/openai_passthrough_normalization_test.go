@@ -20,6 +20,86 @@ func TestNormalizeOpenAIPassthroughOAuthBody_RemovesUnsupportedUser(t *testing.T
 	require.False(t, gjson.GetBytes(normalized, "store").Bool())
 }
 
+func TestNormalizeOpenAIResponsesDeferredTools_RequiresToolSearch(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		path         string
+		wantDeferred bool
+		wantChanged  bool
+	}{
+		{
+			name:         "missing tool search loads top-level tool eagerly",
+			body:         `{"model":"gpt-5.6","input":[],"tools":[{"type":"function","name":"lookup","defer_loading":true}],"stream":true,"store":false}`,
+			path:         "tools.0.defer_loading",
+			wantDeferred: false,
+			wantChanged:  true,
+		},
+		{
+			name:         "missing tool search loads nested tool eagerly",
+			body:         `{"model":"gpt-5.6","input":[],"tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"lookup","defer_loading":true}]}],"stream":true,"store":false}`,
+			path:         "tools.0.tools.0.defer_loading",
+			wantDeferred: false,
+			wantChanged:  true,
+		},
+		{
+			name:         "missing tool search loads historical tool eagerly",
+			body:         `{"model":"gpt-5.6","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","defer_loading":true}]}],"stream":true,"store":false}`,
+			path:         "input.0.tools.0.defer_loading",
+			wantDeferred: false,
+			wantChanged:  true,
+		},
+		{
+			name:         "declared tool search preserves deferred loading",
+			body:         `{"model":"gpt-5.6","input":[],"tools":[{"type":"function","name":"lookup","defer_loading":true},{"type":"tool_search"}],"stream":true,"store":false}`,
+			path:         "tools.0.defer_loading",
+			wantDeferred: true,
+			wantChanged:  false,
+		},
+		{
+			name:         "declared tool search preserves historical deferred loading",
+			body:         `{"model":"gpt-5.6","input":[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"lookup","defer_loading":true}]}],"tools":[{"type":"tool_search"}],"stream":true,"store":false}`,
+			path:         "input.0.tools.0.defer_loading",
+			wantDeferred: true,
+			wantChanged:  false,
+		},
+		{
+			name:         "explicit eager loading remains unchanged",
+			body:         `{"model":"gpt-5.6","input":[],"tools":[{"type":"function","name":"lookup","defer_loading":false}],"stream":true,"store":false}`,
+			path:         "tools.0.defer_loading",
+			wantDeferred: false,
+			wantChanged:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized, changed := normalizeOpenAIResponsesDeferredTools([]byte(tt.body))
+			require.Equal(t, tt.wantChanged, changed)
+			deferred := gjson.GetBytes(normalized, tt.path)
+			require.NotEmpty(t, deferred.Raw)
+			require.Equal(t, tt.wantDeferred, deferred.Bool())
+			if !tt.wantChanged {
+				require.Equal(t, []byte(tt.body), normalized)
+			}
+		})
+	}
+}
+
+func TestNormalizeOpenAIResponsesDeferredTools_PreservedThroughLiteMigration(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6","input":[],"tools":[{"type":"namespace","name":"crm","tools":[{"type":"function","name":"lookup","defer_loading":true}]}],"stream":true,"store":false}`)
+
+	normalized, changed := normalizeOpenAIResponsesDeferredTools(body)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(normalized, "tools.0.tools.0.defer_loading").Bool())
+
+	liteBody, liteChanged, err := normalizeOpenAIResponsesLitePayload(nil, normalized)
+	require.NoError(t, err)
+	require.True(t, liteChanged)
+	require.False(t, gjson.GetBytes(liteBody, "tools").Exists())
+	require.False(t, gjson.GetBytes(liteBody, "input.0.tools.0.tools.0.defer_loading").Bool())
+}
+
 func TestNormalizeOpenAIPassthroughOAuthBody_NormalizesCompatibilityFields(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.5","prompt":"hello","commands":["unsupported"],"truncation":"auto","stop_sequences":["END"],"chat_template_kwargs":{"enable_thinking":true}}`)
 

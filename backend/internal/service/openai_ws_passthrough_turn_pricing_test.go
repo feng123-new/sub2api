@@ -140,14 +140,77 @@ func TestPassthroughIngressReportsTurnStartedBeforeAfterTurnWithoutBeforeTurn(t 
 }
 
 func TestPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T) {
-	testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t, coderws.MessageText)
+	testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t)
 }
 
-func TestPassthroughIngressFreezesBinarySubsequentTurnBeforeRequestPolicy(t *testing.T) {
-	testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t, coderws.MessageBinary)
+func TestPassthroughIngressRejectsBinarySubsequentTurnBeforeRequestPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	defer cancelControl(context.Canceled)
+
+	upstream := newStagedPassthroughConn()
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_first","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+
+	beforeRequestEntered := make(chan struct{}, 1)
+	hooks := &OpenAIWSIngressHooks{
+		InitialTurnStartedAt: time.Now(),
+		BeforeRequest: func(turn int, _ []byte, _ string) error {
+			if turn == 2 {
+				beforeRequestEntered <- struct{}{}
+			}
+			return nil
+		},
+	}
+
+	server, serverErr := startPassthroughHookRecordingServer(
+		t,
+		controlCtx,
+		newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream),
+		passthroughLifecycleAccount(),
+		hooks,
+	)
+	defer server.Close()
+	clientConn := dialPassthroughLifecycleClient(t, server)
+	defer func() { _ = clientConn.CloseNow() }()
+
+	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, 3*time.Second), "type").String())
+	firstCompleted, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_first", gjson.GetBytes(firstCompleted, "response.id").String())
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageBinary, []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_first"}`))
+	cancelWrite()
+	require.NoError(t, err)
+
+	_, err = readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.Error(t, err)
+	var clientClose coderws.CloseError
+	require.ErrorAs(t, err, &clientClose)
+	require.Equal(t, coderws.StatusPolicyViolation, clientClose.Code)
+	require.Contains(t, clientClose.Reason, "binary")
+
+	select {
+	case proxyErr := <-serverErr:
+		var closeErr *OpenAIWSClientCloseError
+		require.ErrorAs(t, proxyErr, &closeErr)
+		require.Contains(t, closeErr.Reason(), "binary")
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough ingress did not reject the binary frame")
+	}
+	select {
+	case <-beforeRequestEntered:
+		t.Fatal("binary frame entered BeforeRequest")
+	default:
+	}
+	select {
+	case unexpected := <-upstream.writes:
+		t.Fatalf("binary frame reached upstream: %s", string(unexpected))
+	default:
+	}
 }
 
-func testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T, secondMessageType coderws.MessageType) {
+func testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	controlCtx, cancelControl := context.WithCancelCause(context.Background())
@@ -200,7 +263,7 @@ func testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T
 	}
 
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
-	err = clientConn.Write(writeCtx, secondMessageType, []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_first"}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_first"}`))
 	cancelWrite()
 	require.NoError(t, err)
 

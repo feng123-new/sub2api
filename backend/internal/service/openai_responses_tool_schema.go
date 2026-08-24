@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -21,7 +23,9 @@ const (
 	openAIResponsesObjectUnionMaxSize    = 1 << 20
 	openAIResponsesObjectUnionMaxDepth   = 32
 
-	openAIResponsesToolSchemaFallbackType = `"object"`
+	openAIResponsesToolSchemaFallbackType      = `"object"`
+	openAIResponsesDeferredToolEnabledLiteral  = "true"
+	openAIResponsesDeferredToolDisabledLiteral = "false"
 )
 
 var errOpenAIResponsesToolSchemaLimit = errors.New("OpenAI Responses tool schema safety limit exceeded")
@@ -91,6 +95,77 @@ func sanitizeOpenAIResponsesToolParameterTypes(body []byte) ([]byte, bool, error
 	})
 }
 
+func normalizeOpenAIResponsesDeferredTools(body []byte) ([]byte, bool) {
+	if len(body) == 0 || len(body) > openAIResponsesToolSchemaMaxBodySize {
+		return body, false
+	}
+	tools := gjson.GetBytes(body, "tools")
+	hasToolSearch := false
+	if tools.IsArray() {
+		tools.ForEach(func(_, tool gjson.Result) bool {
+			if tool.IsObject() && tool.Get("type").String() == "tool_search" {
+				hasToolSearch = true
+				return false
+			}
+			return true
+		})
+	}
+	if hasToolSearch {
+		return body, false
+	}
+
+	hits := make([]openAIResponsesDeferredToolFlag, 0, 2)
+	if tools.IsArray() {
+		collectOpenAIResponsesDeferredToolFlags(body, tools, 0, &hits)
+	}
+	if input := gjson.GetBytes(body, "input"); input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			if item.IsObject() {
+				collectOpenAIResponsesDeferredToolFlags(body, item.Get("tools"), 0, &hits)
+			}
+			return len(hits) <= openAIResponsesToolSchemaMaxEdits
+		})
+	}
+	if len(hits) == 0 || len(hits) > openAIResponsesToolSchemaMaxEdits {
+		return body, false
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].offset < hits[j].offset })
+
+	normalized := make([]byte, 0, len(body)+len(hits))
+	cursor := 0
+	for _, hit := range hits {
+		if hit.offset < cursor {
+			continue
+		}
+		normalized = append(normalized, body[cursor:hit.offset]...)
+		normalized = append(normalized, openAIResponsesDeferredToolDisabledLiteral...)
+		cursor = hit.offset + hit.length
+	}
+	normalized = append(normalized, body[cursor:]...)
+	return normalized, true
+}
+
+func collectOpenAIResponsesDeferredToolFlags(
+	body []byte, tools gjson.Result, depth int, hits *[]openAIResponsesDeferredToolFlag,
+) {
+	if depth > openAIResponsesToolSchemaMaxDepth || !tools.IsArray() || len(*hits) > openAIResponsesToolSchemaMaxEdits {
+		return
+	}
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if !tool.IsObject() {
+			return true
+		}
+		if deferred := tool.Get("defer_loading"); deferred.Type == gjson.True && deferred.Raw == openAIResponsesDeferredToolEnabledLiteral {
+			end := deferred.Index + len(deferred.Raw)
+			if deferred.Index > 0 && end <= len(body) && bytes.Equal(body[deferred.Index:end], []byte(deferred.Raw)) {
+				*hits = append(*hits, openAIResponsesDeferredToolFlag{offset: deferred.Index, length: len(deferred.Raw)})
+			}
+		}
+		collectOpenAIResponsesDeferredToolFlags(body, tool.Get("tools"), depth+1, hits)
+		return len(*hits) <= openAIResponsesToolSchemaMaxEdits
+	})
+}
+
 func openAIResponsesBodyMayContainRegexLookaround(body []byte) bool {
 	// An opening parenthesis may be literal or encoded as JSON's canonical
 	// Unicode escape. Other lookaround characters may themselves be escaped, so
@@ -131,6 +206,11 @@ type openAIResponsesToolSchemaEdit struct {
 	start       int
 	end         int
 	replacement string
+}
+
+type openAIResponsesDeferredToolFlag struct {
+	offset int
+	length int
 }
 
 type openAIResponsesToolSchemaParser struct {

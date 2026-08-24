@@ -10,6 +10,7 @@ import type {
   AssignSubscriptionRequest,
   BulkAssignSubscriptionRequest,
   ExtendSubscriptionRequest,
+  ScheduleSubscriptionQuotaResetRequest,
   PaginatedResponse
 } from '@/types'
 
@@ -148,6 +149,17 @@ export async function resetQuota(
   return data
 }
 
+export async function scheduleQuotaReset(
+  id: number,
+  request: ScheduleSubscriptionQuotaResetRequest
+): Promise<UserSubscription> {
+  const { data } = await apiClient.post<UserSubscription>(
+    `/admin/subscriptions/${id}/reset-time`,
+    request
+  )
+  return data
+}
+
 /**
  * List subscriptions by group
  * @param groupId - Group ID
@@ -200,6 +212,7 @@ export const subscriptionsAPI = {
   revoke,
   restore,
   resetQuota,
+  scheduleQuotaReset,
   listByGroup,
   listByUser
 }

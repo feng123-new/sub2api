@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/websearch"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
+
+const grokStandaloneXSearchModel = "grok-x-search"
 
 type grokStandaloneSearchRequest struct {
 	Query                    string   `json:"query"`
@@ -32,10 +36,28 @@ func resolveGrokStandaloneSearchModel() string {
 	return xai.ResolveDefaultTextModel(xai.RuntimeModelMappingOptions().DefaultText)
 }
 
+func resolveGrokStandaloneXSearchModel() string {
+	return grokStandaloneXSearchModel
+}
+
 func buildGrokXSearchResponsesBody(req grokStandaloneSearchRequest, model string) ([]byte, error) {
 	input := strings.TrimSpace(req.Query)
 	if input == "" {
 		input = strings.TrimSpace(req.Input)
+	}
+	model = strings.TrimSpace(model)
+	maxResults := 0
+	if req.MaxResults != nil {
+		maxResults = *req.MaxResults
+	}
+	payload := map[string]any{
+		"model":  xai.ResolveDefaultTextModel(model),
+		"input":  buildGrokXSearchPrompt(input, maxResults),
+		"store":  false,
+		"stream": false,
+	}
+	if isGrokWebRouteModel(model) {
+		return json.Marshal(payload)
 	}
 	tool := map[string]any{"type": "x_search"}
 	if len(req.AllowedXHandles) > 0 {
@@ -56,19 +78,51 @@ func buildGrokXSearchResponsesBody(req grokStandaloneSearchRequest, model string
 	if req.EnableVideoUnderstanding != nil {
 		tool["enable_video_understanding"] = *req.EnableVideoUnderstanding
 	}
-	maxResults := 0
-	if req.MaxResults != nil {
-		maxResults = *req.MaxResults
+	payload["tools"] = []map[string]any{tool}
+	payload["tool_choice"] = "required"
+	return json.Marshal(payload)
+}
+
+func isGrokWebRouteModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "web/")
+}
+
+func validateGrokWebXSearchFilters(req grokStandaloneSearchRequest) error {
+	if len(req.AllowedXHandles) > 0 || len(req.ExcludedXHandles) > 0 ||
+		strings.TrimSpace(req.FromDate) != "" || strings.TrimSpace(req.ToDate) != "" ||
+		req.EnableImageUnderstanding != nil || req.EnableVideoUnderstanding != nil {
+		return fmt.Errorf("x_search filters are not supported by the Grok Web route")
 	}
-	return json.Marshal(map[string]any{
-		"model":       xai.ResolveDefaultTextModel(model),
-		"input":       buildGrokXSearchPrompt(input, maxResults),
-		"tools":       []map[string]any{tool},
-		"tool_choice": "required",
-		"include":     []string{"x_search_call.action.sources"},
-		"store":       false,
-		"stream":      false,
+	return nil
+}
+
+func validateGrokNativeXSearchResponse(body []byte, results []websearch.SearchResult) error {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return fmt.Errorf("x_search returned an invalid response")
+	}
+	status := strings.TrimSpace(gjson.GetBytes(body, "status").String())
+	output := gjson.GetBytes(body, "output")
+	if !output.IsArray() {
+		status = strings.TrimSpace(gjson.GetBytes(body, "response.status").String())
+		output = gjson.GetBytes(body, "response.output")
+	}
+	if status != "completed" {
+		return fmt.Errorf("x_search response did not complete")
+	}
+	completedCallWithSources := false
+	output.ForEach(func(_, item gjson.Result) bool {
+		if item.Get("type").String() == "x_search_call" &&
+			item.Get("status").String() == "completed" &&
+			item.Get("action.sources").IsArray() && len(item.Get("action.sources").Array()) > 0 {
+			completedCallWithSources = true
+			return false
+		}
+		return true
 	})
+	if !completedCallWithSources || len(results) == 0 {
+		return fmt.Errorf("x_search returned no verifiable sources")
+	}
+	return nil
 }
 
 func buildGrokXSearchPrompt(query string, maxResults int) string {

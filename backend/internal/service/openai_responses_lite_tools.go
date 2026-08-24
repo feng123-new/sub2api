@@ -1,10 +1,12 @@
 package service
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/gin-gonic/gin"
 )
 
 type openAIResponsesLiteValidationError struct {
@@ -252,14 +254,37 @@ func openAIResponsesLiteToolIdentityForError(rawTool any) string {
 	return fmt.Sprintf("tool type %q name %q", strings.TrimSpace(firstNonEmptyString(tool["type"])), strings.TrimSpace(firstNonEmptyString(tool["name"])))
 }
 
-func normalizeOpenAIResponsesLiteToolsPayload(body []byte) ([]byte, bool, error) {
-	var requestBody map[string]any
-	if err := json.Unmarshal(body, &requestBody); err != nil {
+func normalizeOpenAIResponsesLitePayload(c *gin.Context, body []byte) ([]byte, bool, error) {
+	requestBody, err := decodeOpenAIResponsesJSONObject(body)
+	if err != nil {
 		return body, false, fmt.Errorf("decode responses Lite request body: %w", err)
 	}
-	changed, err := normalizeOpenAIResponsesLiteTools(requestBody)
-	if err != nil || !changed {
+
+	clonedBody, err := marshalOpenAIUpstreamJSON(requestBody)
+	if err != nil {
+		return body, false, fmt.Errorf("clone responses Lite request body: %w", err)
+	}
+	namespaceView, err := decodeOpenAIResponsesJSONObject(clonedBody)
+	if err != nil {
+		return body, false, fmt.Errorf("clone responses Lite request body: %w", err)
+	}
+	names, namespacesFlattened, err := apicompat.FlattenResponsesNamespacesExcept(namespaceView, map[string]bool{"image_gen": true})
+	if err != nil {
 		return body, false, err
+	}
+	if namespacesFlattened {
+		if input, exists := namespaceView["input"]; exists {
+			requestBody["input"] = input
+		}
+		setOpenAIResponsesNamespaceNames(c, names)
+	}
+
+	toolsChanged, err := normalizeOpenAIResponsesLiteTools(requestBody)
+	if err != nil {
+		return body, false, err
+	}
+	if !namespacesFlattened && !toolsChanged {
+		return body, false, nil
 	}
 	rebuilt, err := marshalOpenAIUpstreamJSON(requestBody)
 	if err != nil {
