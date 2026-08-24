@@ -12,10 +12,12 @@ type contentModerationKeywordMatcher struct {
 }
 
 type contentModerationKeywordNode struct {
-	failure     int32
-	bestKeyword int32
-	edgeStart   uint32
-	edgeCount   uint16
+	failure         int32
+	output          int32
+	terminalKeyword int32
+	bestKeyword     int32
+	edgeStart       uint32
+	edgeCount       uint16
 }
 
 type contentModerationKeywordEdge struct {
@@ -39,11 +41,12 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 	originalKeywords := append([]string(nil), keywords...)
 
 	for keywordIndex, keyword := range keywords {
-		if keyword == "" {
+		normalizedKeyword := strings.ToLower(strings.TrimSpace(keyword))
+		if normalizedKeyword == "" {
 			continue
 		}
 		state := int32(0)
-		for _, label := range []byte(strings.ToLower(keyword)) {
+		for _, label := range []byte(normalizedKeyword) {
 			next := contentModerationKeywordBuildTransition(buildNodes, buildEdges, state, label)
 			if next < 0 {
 				next = int32(len(buildNodes))
@@ -59,6 +62,9 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 		}
 		if current := buildNodes[state].bestKeyword; current < 0 || int32(keywordIndex) < current {
 			buildNodes[state].bestKeyword = int32(keywordIndex)
+		}
+		if current := buildNodes[state].terminalKeyword; current < 0 || int32(keywordIndex) < current {
+			buildNodes[state].terminalKeyword = int32(keywordIndex)
 		}
 	}
 
@@ -86,6 +92,12 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 			}
 			if fallback >= 0 {
 				buildNodes[edge.target].failure = fallback
+			}
+			failureNode := buildNodes[buildNodes[edge.target].failure]
+			if failureNode.terminalKeyword >= 0 {
+				buildNodes[edge.target].output = buildNodes[edge.target].failure
+			} else {
+				buildNodes[edge.target].output = failureNode.output
 			}
 			buildNodes[edge.target].bestKeyword = minKeywordIndex(
 				buildNodes[edge.target].bestKeyword,
@@ -127,7 +139,7 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 }
 
 func newContentModerationKeywordNode() contentModerationKeywordNode {
-	return contentModerationKeywordNode{bestKeyword: -1}
+	return contentModerationKeywordNode{output: -1, terminalKeyword: -1, bestKeyword: -1}
 }
 
 func contentModerationKeywordBuildFirstEdge(node contentModerationKeywordNode) int32 {
@@ -184,9 +196,25 @@ func (m *contentModerationKeywordMatcher) Match(text string) (string, bool) {
 			}
 			state = m.nodes[state].failure
 		}
-		bestKeyword = minKeywordIndex(bestKeyword, m.nodes[state].bestKeyword)
-		if bestKeyword == 0 {
-			return m.keywords[0], true
+		for outputState := state; outputState >= 0; outputState = m.nodes[outputState].output {
+			keywordIndex := m.nodes[outputState].terminalKeyword
+			if keywordIndex < 0 || int(keywordIndex) >= len(m.keywords) {
+				continue
+			}
+			normalizedKeyword := strings.ToLower(strings.TrimSpace(m.keywords[keywordIndex]))
+			matchEnd := index + 1
+			matchStart := matchEnd - len(normalizedKeyword)
+			if matchStart < 0 {
+				continue
+			}
+			if blockedKeywordUsesBoundaries(normalizedKeyword) &&
+				!blockedKeywordHasRequiredBoundaries(lower, normalizedKeyword, matchStart, matchEnd) {
+				continue
+			}
+			bestKeyword = minKeywordIndex(bestKeyword, keywordIndex)
+			if bestKeyword == 0 {
+				return m.keywords[0], true
+			}
 		}
 	}
 	if bestKeyword < 0 || int(bestKeyword) >= len(m.keywords) {

@@ -158,6 +158,9 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 	upstreamBody = applyOllamaCloudRawChatCompletionsRequest(account, upstreamBody)
+	if err := s.runOpenAIContextPreflight(ctx, c, openAIContextPreflightEndpointChatCompletions, upstreamBody, upstreamModel); err != nil {
+		return nil, err
+	}
 
 	logger.L().Debug("openai chat_completions raw: forwarding without protocol conversion",
 		zap.Int64("account_id", account.ID),

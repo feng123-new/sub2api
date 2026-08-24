@@ -3018,6 +3018,13 @@ func (s *GeminiMessagesCompatService) handleGeminiUpstreamError(ctx context.Cont
 	isCodeAssist := account.IsGeminiCodeAssist()
 
 	resetAt := ParseGeminiRateLimitResetTime(body)
+	if resetAt == nil && account.Type == AccountTypeServiceAccount {
+		// Vertex uses generic RESOURCE_EXHAUSTED for transient shared capacity.
+		// Without a reset signal, keep the failover request-scoped instead of
+		// excluding the account until the AI Studio daily reset.
+		logger.LegacyPrintf("service.gemini_messages_compat", "[Gemini 429] Account %d (Vertex service account, project=%s) transient resource exhaustion; skipping persistent rate limit", account.ID, projectID)
+		return
+	}
 	if resetAt == nil {
 		// 根据账号类型使用不同的默认重置时间
 		var ra time.Time

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -139,11 +140,53 @@ func TestAccountTestService_TestAccountConnection_GrokUsesXAIResponses(t *testin
 	require.Equal(t, "grok-4.3", gjson.GetBytes(upstream.lastBody, "model").String())
 	require.Equal(t, grokQuotaProbeInput, gjson.GetBytes(upstream.lastBody, "input").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "stream").Bool())
+	identity := gjson.GetBytes(upstream.lastBody, "prompt_cache_key").String()
+	require.NotEmpty(t, identity)
+	require.Equal(t, identity, upstream.lastReq.Header.Get(grokConversationIDHeader))
 	require.False(t, gjson.GetBytes(upstream.lastBody, "max_output_tokens").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "store").Exists())
 	require.NotContains(t, rec.Body.String(), "claude")
 	require.Contains(t, rec.Body.String(), `"model":"grok-4.3"`)
 	require.Contains(t, rec.Body.String(), `"type":"test_complete"`)
+	require.Contains(t, rec.Body.String(), `"ttft_ms":`)
+	require.Contains(t, rec.Body.String(), `"duration_ms":`)
+}
+
+func TestAccountTestService_GrokTestUsesUniqueSessionPerRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	account := &Account{
+		ID: 17, Name: "grok-apikey", Platform: PlatformGrok,
+		Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1,
+		Credentials: map[string]any{"api_key": "test-key", "base_url": "https://grok.example.com/v1"},
+	}
+	repo := &mockAccountRepoForGemini{accountsByID: map[int64]*Account{account.ID: account}}
+	stream := func() io.ReadCloser {
+		return io.NopCloser(strings.NewReader(
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n" +
+				"data: {\"type\":\"response.completed\"}\n\n",
+		))
+	}
+	upstream := &httpUpstreamRecorder{responses: []*http.Response{
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: stream()},
+		{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: stream()},
+	}}
+	svc := &AccountTestService{accountRepo: repo, httpUpstream: upstream, cfg: &config.Config{}}
+
+	for range 2 {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/17/test", nil)
+		require.NoError(t, svc.TestAccountConnection(c, account.ID, "grok-4.5", "", AccountTestModeDefault))
+	}
+
+	require.Len(t, upstream.bodies, 2)
+	first := gjson.GetBytes(upstream.bodies[0], "prompt_cache_key").String()
+	second := gjson.GetBytes(upstream.bodies[1], "prompt_cache_key").String()
+	require.NotEmpty(t, first)
+	require.NotEmpty(t, second)
+	require.NotEqual(t, first, second)
+	require.Equal(t, first, upstream.requests[0].Header.Get(grokConversationIDHeader))
+	require.Equal(t, second, upstream.requests[1].Header.Get(grokConversationIDHeader))
 }
 
 func TestAccountTestService_TestAccountConnection_GrokDefaultsEmptyModelTo45(t *testing.T) {
