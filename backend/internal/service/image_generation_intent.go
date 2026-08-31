@@ -135,7 +135,7 @@ func validateOpenAIImagePolicyJSONValue(decoder *json.Decoder, path string) erro
 			if !ok {
 				return fmt.Errorf("invalid JSON object key at path %q", path)
 			}
-			if _, exists := seen[key]; exists && (path != "root" || key != "previous_response_id") {
+			if _, exists := seen[key]; exists && !isOpenAIImagePolicyDuplicateKeyAllowed(path, key) {
 				if path == "root" {
 					return &OpenAIImagePolicyDuplicateRootKeyError{Key: key}
 				}
@@ -159,6 +159,10 @@ func validateOpenAIImagePolicyJSONValue(decoder *json.Decoder, path string) erro
 	default:
 		return fmt.Errorf("unexpected JSON delimiter %q at path %q", delimiter, path)
 	}
+}
+
+func isOpenAIImagePolicyDuplicateKeyAllowed(path, key string) bool {
+	return path == "root" && (key == "previous_response_id" || key == "type")
 }
 
 func appendOpenAIImagePolicyObjectPath(path string, key string) string {
