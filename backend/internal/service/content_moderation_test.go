@@ -1409,6 +1409,30 @@ func TestContentModerationCallModeration_FreezesByHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestContentModerationCallModeration_429HonorsRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RetryCount = 0
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+
+	_, err := svc.callModeration(context.Background(), cfg, "hello")
+	require.Error(t, err)
+
+	status := svc.apiKeyStatusForHash(0, moderationAPIKeyHash("sk-test"), maskSecretTail("sk-test"), true)
+	require.NotNil(t, status.FrozenUntil)
+	remaining := time.Until(*status.FrozenUntil)
+	require.GreaterOrEqual(t, remaining, 6*time.Second)
+	require.LessOrEqual(t, remaining, 8*time.Second)
+}
+
 func TestContentModerationTestAPIKeys_400DoesNotFreezeAPIKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

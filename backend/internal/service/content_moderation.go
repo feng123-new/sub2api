@@ -795,11 +795,12 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 	for idx, key := range keys {
 		start := time.Now()
 		httpStatus := 0
-		result, err := s.callModerationOnceWithInput(ctx, cfg, key, testInput, &httpStatus)
+		var retryAfter time.Duration
+		result, err := s.callModerationOnceWithInput(ctx, cfg, key, testInput, &httpStatus, &retryAfter)
 		latency := int(time.Since(start).Milliseconds())
 		keyHash := moderationAPIKeyHash(key)
 		if err != nil {
-			s.markAPIKeyError(key, err.Error(), latency, httpStatus)
+			s.markAPIKeyError(key, err.Error(), latency, httpStatus, retryAfter)
 		} else {
 			s.markAPIKeySuccess(key, latency, httpStatus)
 			if auditResult == nil {
@@ -1705,7 +1706,8 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		}
 		start := time.Now()
 		httpStatus := 0
-		result, err := s.callModerationOnceWithInput(ctx, cfg, key, input, &httpStatus)
+		var retryAfter time.Duration
+		result, err := s.callModerationOnceWithInput(ctx, cfg, key, input, &httpStatus, &retryAfter)
 		latency := int(time.Since(start).Milliseconds())
 		if err == nil {
 			if trackLoad {
@@ -1717,7 +1719,7 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 		if trackLoad {
 			s.finishModerationAPIKeyCall(key, latency, false)
 		}
-		s.markAPIKeyError(key, err.Error(), latency, httpStatus)
+		s.markAPIKeyError(key, err.Error(), latency, httpStatus, retryAfter)
 		lastErr = err
 		if httpStatus == http.StatusBadRequest {
 			break
@@ -1735,7 +1737,7 @@ func (s *ContentModerationService) callModeration(ctx context.Context, cfg *Cont
 	return nil, lastErr
 }
 
-func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Context, cfg *ContentModerationConfig, apiKey string, input any, httpStatus *int) (*moderationAPIResult, error) {
+func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Context, cfg *ContentModerationConfig, apiKey string, input any, httpStatus *int, retryAfter *time.Duration) (*moderationAPIResult, error) {
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	endpoint, err := url.JoinPath(base, "/v1/moderations")
 	if err != nil {
@@ -1771,6 +1773,12 @@ func (s *ContentModerationService) callModerationOnceWithInput(ctx context.Conte
 	defer func() { _ = resp.Body.Close() }()
 	if httpStatus != nil {
 		*httpStatus = resp.StatusCode
+	}
+	if retryAfter != nil && resp.StatusCode == http.StatusTooManyRequests {
+		now := time.Now()
+		if resetAt := parseRetryAfterResetTime(resp.Header, now); resetAt != nil && resetAt.After(now) {
+			*retryAfter = resetAt.Sub(now)
+		}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -2349,7 +2357,7 @@ func (s *ContentModerationService) markAPIKeySuccess(key string, latencyMS int, 
 	state.LastTested = true
 }
 
-func (s *ContentModerationService) markAPIKeyError(key string, errText string, latencyMS int, httpStatus int) {
+func (s *ContentModerationService) markAPIKeyError(key string, errText string, latencyMS int, httpStatus int, retryAfter time.Duration) {
 	hash := moderationAPIKeyHash(key)
 	if hash == "" || s == nil {
 		return
@@ -2357,7 +2365,11 @@ func (s *ContentModerationService) markAPIKeyError(key string, errText string, l
 	s.keyHealthMu.Lock()
 	defer s.keyHealthMu.Unlock()
 	state := s.ensureAPIKeyHealthLocked(hash, maskSecretTail(key))
-	if contentModerationFreezeDurationForHTTPStatus(httpStatus) > 0 {
+	freezeDuration := contentModerationFreezeDurationForHTTPStatus(httpStatus)
+	if httpStatus == http.StatusTooManyRequests && retryAfter > 0 {
+		freezeDuration = retryAfter
+	}
+	if freezeDuration > 0 {
 		state.FailureCount++
 	}
 	state.LastError = trimRunes(errText, 180)
@@ -2365,7 +2377,7 @@ func (s *ContentModerationService) markAPIKeyError(key string, errText string, l
 	state.LastLatencyMS = latencyMS
 	state.LastHTTPStatus = httpStatus
 	state.LastTested = true
-	if freezeDuration := contentModerationFreezeDurationForHTTPStatus(httpStatus); freezeDuration > 0 {
+	if freezeDuration > 0 {
 		state.FrozenUntil = time.Now().Add(freezeDuration)
 	}
 }
