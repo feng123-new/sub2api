@@ -413,6 +413,59 @@ func TestLoadDefaultContextPreflightConfig(t *testing.T) {
 	require.Empty(t, cfg.Gateway.ContextPreflight.Models)
 }
 
+func TestLoadDefaultOpenAIServerCompactionConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "off", cfg.Gateway.OpenAIServerCompaction.Mode)
+	require.Zero(t, cfg.Gateway.OpenAIServerCompaction.DefaultThreshold)
+	require.Empty(t, cfg.Gateway.OpenAIServerCompaction.ModelThresholds)
+}
+
+func TestLoadOpenAIServerCompactionConfig(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	viper.Set("gateway.openai_server_compaction.mode", " Enforce ")
+	viper.Set("gateway.openai_server_compaction.default_threshold", 800000)
+	viper.Set("gateway.openai_server_compaction.model_thresholds", map[string]int64{
+		" GPT-5.6-SOL ": 700000,
+	})
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, "enforce", cfg.Gateway.OpenAIServerCompaction.Mode)
+	require.EqualValues(t, 800000, cfg.Gateway.OpenAIServerCompaction.DefaultThreshold)
+	require.Equal(t, map[string]int64{"gpt-5.6-sol": 700000}, cfg.Gateway.OpenAIServerCompaction.ModelThresholds)
+}
+
+func TestValidateOpenAIServerCompactionConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  GatewayOpenAIServerCompactionConfig
+		wantErr string
+	}{
+		{name: "off", config: GatewayOpenAIServerCompactionConfig{Mode: "off"}},
+		{name: "shadow model threshold", config: GatewayOpenAIServerCompactionConfig{Mode: "shadow", ModelThresholds: map[string]int64{"gpt-5.6-sol": 700000}}},
+		{name: "enforce default threshold", config: GatewayOpenAIServerCompactionConfig{Mode: "enforce", DefaultThreshold: 700000}},
+		{name: "invalid mode", config: GatewayOpenAIServerCompactionConfig{Mode: "observe"}, wantErr: "gateway.openai_server_compaction.mode"},
+		{name: "negative default threshold", config: GatewayOpenAIServerCompactionConfig{Mode: "enforce", DefaultThreshold: -1}, wantErr: "gateway.openai_server_compaction.default_threshold"},
+		{name: "blank model", config: GatewayOpenAIServerCompactionConfig{Mode: "enforce", ModelThresholds: map[string]int64{"": 700000}}, wantErr: "gateway.openai_server_compaction.model_thresholds"},
+		{name: "non-positive model threshold", config: GatewayOpenAIServerCompactionConfig{Mode: "enforce", ModelThresholds: map[string]int64{"gpt-5.6-sol": 0}}, wantErr: "gateway.openai_server_compaction.model_thresholds"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			cfg, err := Load()
+			require.NoError(t, err)
+			cfg.Gateway.OpenAIServerCompaction = tt.config
+			err = cfg.Validate()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestLoadContextPreflightConfig(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	viper.Set("gateway.context_preflight.mode", " Shadow ")

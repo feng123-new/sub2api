@@ -310,6 +310,21 @@ gateway:
   # Use this to avoid compact failures when newer models are not yet supported by the compact endpoint.
   # 当 compact 端点暂未支持更新模型时，可通过这里降级规避失败。
   openai_compact_model: "gpt-5.4"
+  # Upstream Responses API server-side compaction injection.
+  # 上游 Responses API 服务端自动压缩注入。
+  # mode: off=disabled, shadow=observe only, enforce=inject context_management.
+  # mode: off=关闭，shadow=仅观察，enforce=注入 context_management。
+  # Existing client context_management, compaction_trigger turns, compact requests,
+  # and WebSocket Responses are never modified.
+  # 客户端已有配置、compaction_trigger、compact 请求和 WebSocket Responses 均不改写。
+  openai_server_compaction:
+    mode: "off"
+    # Optional fallback for models absent from model_thresholds; 0 disables it.
+    # 未在 model_thresholds 中声明的模型可使用此兜底；0 表示不启用。
+    default_threshold: 0
+    model_thresholds: {}
+    # model_thresholds:
+    #   gpt-5.6-sol: 700000
   # ChatGPT Frameless Live 单会话硬上限（秒）。
   live:
     max_session_duration_seconds: 3600
