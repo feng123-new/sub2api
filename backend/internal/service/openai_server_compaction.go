@@ -22,6 +22,7 @@ const (
 	openAIServerCompactionDecisionClientConfigured  openAIServerCompactionDecision = "client_configured"
 	openAIServerCompactionDecisionCompactionTrigger openAIServerCompactionDecision = "compaction_trigger"
 	openAIServerCompactionDecisionCompactRequest    openAIServerCompactionDecision = "compact_request"
+	openAIServerCompactionDecisionResponsesLite     openAIServerCompactionDecision = "responses_lite"
 )
 
 var openAIServerCompactionDecisionLogs sync.Map
@@ -30,6 +31,7 @@ func applyOpenAIServerCompaction(
 	body []byte,
 	model string,
 	compactRequest bool,
+	responsesLite bool,
 	cfg config.GatewayOpenAIServerCompactionConfig,
 ) ([]byte, openAIServerCompactionDecision, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
@@ -39,6 +41,9 @@ func applyOpenAIServerCompaction(
 	threshold := openAIServerCompactionThreshold(cfg, model)
 	if threshold <= 0 {
 		return body, openAIServerCompactionDecisionNoThreshold, nil
+	}
+	if responsesLite {
+		return body, openAIServerCompactionDecisionResponsesLite, nil
 	}
 	if compactRequest {
 		return body, openAIServerCompactionDecisionCompactRequest, nil
@@ -100,14 +105,15 @@ func removeRejectedInjectedOpenAIServerCompaction(statusCode int, body, response
 	}
 	code := strings.ToLower(strings.TrimSpace(extractUpstreamErrorCode(responseBody)))
 	message := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(responseBody)))
-	if !isExplicitOpenAIResponsesFieldRejection(code, message) {
-		return body, false, nil
-	}
 	param := strings.ToLower(strings.TrimSpace(gjson.GetBytes(responseBody, "error.param").String()))
 	if param == "" && strings.Contains(message, "context_management") {
 		param = "context_management"
 	}
-	if param != "context_management" {
+	explicitFieldRejection := isExplicitOpenAIResponsesFieldRejection(code, message) && param == "context_management"
+	unsupportedServerCompaction := code == "unsupported_value" &&
+		param == "compact_threshold" &&
+		strings.Contains(message, "does not support server-side compaction")
+	if !explicitFieldRejection && !unsupportedServerCompaction {
 		return body, false, nil
 	}
 	retryBody, err := sjson.DeleteBytes(body, "context_management")

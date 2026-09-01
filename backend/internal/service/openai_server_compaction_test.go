@@ -24,14 +24,15 @@ func TestApplyOpenAIServerCompaction(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		cfg         config.GatewayOpenAIServerCompactionConfig
-		body        []byte
-		model       string
-		compactPath bool
-		want        openAIServerCompactionDecision
-		wantChanged bool
-		wantLimit   int64
+		name          string
+		cfg           config.GatewayOpenAIServerCompactionConfig
+		body          []byte
+		model         string
+		compactPath   bool
+		responsesLite bool
+		want          openAIServerCompactionDecision
+		wantChanged   bool
+		wantLimit     int64
 	}{
 		{name: "off", cfg: config.GatewayOpenAIServerCompactionConfig{Mode: "off"}, body: baseBody, model: "gpt-5.6-sol", want: openAIServerCompactionDecisionOff},
 		{name: "model not configured", cfg: enforce, body: baseBody, model: "gpt-5.6-luna", want: openAIServerCompactionDecisionNoThreshold},
@@ -41,11 +42,12 @@ func TestApplyOpenAIServerCompaction(t *testing.T) {
 		{name: "preserve client config", cfg: enforce, body: []byte(`{"model":"gpt-5.6-sol","context_management":[{"type":"compaction","compact_threshold":123456}],"input":"hello"}`), model: "gpt-5.6-sol", want: openAIServerCompactionDecisionClientConfigured, wantLimit: 123456},
 		{name: "skip compaction trigger", cfg: enforce, body: []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"hello"},{"type":"compaction_trigger"}]}`), model: "gpt-5.6-sol", want: openAIServerCompactionDecisionCompactionTrigger},
 		{name: "skip compact path", cfg: enforce, body: baseBody, model: "gpt-5.6-sol", compactPath: true, want: openAIServerCompactionDecisionCompactRequest},
+		{name: "skip responses lite", cfg: enforce, body: baseBody, model: "gpt-5.6-sol", responsesLite: true, want: openAIServerCompactionDecisionResponsesLite},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, decision, err := applyOpenAIServerCompaction(tt.body, tt.model, tt.compactPath, tt.cfg)
+			got, decision, err := applyOpenAIServerCompaction(tt.body, tt.model, tt.compactPath, tt.responsesLite, tt.cfg)
 			require.NoError(t, err)
 			require.Equal(t, tt.want, decision)
 			if tt.wantChanged {
@@ -128,6 +130,30 @@ func TestOpenAIGatewayServiceForwardOAuthHTTPInjectsServerCompaction(t *testing.
 	require.EqualValues(t, 700000, gjson.GetBytes(upstream.lastBody, "context_management.0.compact_threshold").Int())
 }
 
+func TestOpenAIGatewayServiceForwardResponsesLiteSkipsServerCompaction(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":"hello"}`)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(string(body)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.Header.Set(responsesLiteHeader, "true")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_lite","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+	}}
+
+	result, err := newOpenAIServerCompactionForwardTestService(upstream).Forward(
+		context.Background(), c, newOpenAIServerCompactionForwardTestAccount(), body,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "context_management").Exists())
+}
+
 func TestOpenAIGatewayServiceForwardRetriesInjectedServerCompactionRejectionWithoutField(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.6-sol","stream":false,"input":"hello"}`)
@@ -140,7 +166,7 @@ func TestOpenAIGatewayServiceForwardRetriesInjectedServerCompactionRejectionWith
 		{
 			StatusCode: http.StatusBadRequest,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"unsupported_parameter","message":"Unsupported parameter: context_management","param":"context_management"}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"unsupported_value","message":"Invalid value: 'compact_threshold'. X-OpenAI-Internal-Codex-Responses-Lite does not support server-side compaction.","param":"compact_threshold","type":"invalid_request_error"}}`)),
 		},
 		{
 			StatusCode: http.StatusOK,

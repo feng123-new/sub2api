@@ -1046,6 +1046,7 @@ func (s *OpenAIGatewayService) forward(
 			body,
 			upstreamModel,
 			isCompactRequest,
+			responsesLite,
 			s.cfg.Gateway.OpenAIServerCompaction,
 		)
 		if injectErr != nil {
