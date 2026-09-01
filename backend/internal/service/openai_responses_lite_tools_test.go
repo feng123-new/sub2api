@@ -354,6 +354,8 @@ func TestNormalizeOpenAIResponsesLiteToolsPayload_PreservesResponseCreateShape(t
 }
 
 func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body := []byte(`{
 		"type":"response.create",
 		"sequence":900719925474099312345,
@@ -364,7 +366,9 @@ func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T
 		name      string
 		normalize func([]byte) ([]byte, bool, error)
 	}{
-		{name: "OAuth-like tools normalization", normalize: normalizeOpenAIResponsesLiteToolsPayload},
+		{name: "OAuth-like tools normalization", normalize: func(body []byte) ([]byte, bool, error) {
+			return normalizeOpenAIResponsesLitePayload(c, body)
+		}},
 		{name: "API key parallel normalization", normalize: normalizeOpenAIResponsesLiteParallelToolCallsPayload},
 	}
 

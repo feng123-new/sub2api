@@ -2230,9 +2230,9 @@ func (s *RateLimitService) HandleOpenAIImageRateLimit(ctx context.Context, accou
 	return true
 }
 
-	// HandleOpenAICodexSparkRateLimit 将 Spark 独立配额窗口记录为模型级限流。
-	// Spark 的 x-codex-* 使用率和 reset 时间只代表 Spark 模型维度，不能写入账号级
-	// RateLimitResetAt，否则同一 OAuth 账号上的其他模型也会被错误停调。
+// HandleOpenAICodexSparkRateLimit 将 Spark 独立配额窗口记录为模型级限流。
+// Spark 的 x-codex-* 使用率和 reset 时间只代表 Spark 模型维度，不能写入账号级
+// RateLimitResetAt，否则同一 OAuth 账号上的其他模型也会被错误停调。
 func (s *RateLimitService) HandleOpenAICodexSparkRateLimit(ctx context.Context, account *Account, requestedModel string, statusCode int, headers http.Header, responseBody []byte) bool {
 	if s == nil || account == nil || s.accountRepo == nil || statusCode != http.StatusTooManyRequests || !isOpenAIOAuthAccount(account) {
 		return false
@@ -2267,7 +2267,7 @@ func (s *RateLimitService) HandleOpenAICodexSparkRateLimit(ctx context.Context, 
 	return true
 }
 
-	func (s *RateLimitService) HandleOpenAIImageCapabilityLoss(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
+func (s *RateLimitService) HandleOpenAIImageCapabilityLoss(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
 	if s == nil || account == nil || s.accountRepo == nil {
 		return false
 	}

@@ -239,22 +239,6 @@ func openAIResponsesLiteToolIdentityForError(rawTool any) string {
 	return fmt.Sprintf("tool type %q name %q", strings.TrimSpace(firstNonEmptyString(tool["type"])), strings.TrimSpace(firstNonEmptyString(tool["name"])))
 }
 
-func normalizeOpenAIResponsesLiteToolsPayload(body []byte) ([]byte, bool, error) {
-	var requestBody map[string]any
-	if err := decodeOpenAIJSONUseNumber(body, &requestBody); err != nil {
-		return body, false, fmt.Errorf("decode responses Lite request body: %w", err)
-	}
-	changed, err := normalizeOpenAIResponsesLiteTools(requestBody)
-	if err != nil || !changed {
-		return body, false, err
-	}
-	rebuilt, err := marshalOpenAIUpstreamJSON(requestBody)
-	if err != nil {
-		return body, false, fmt.Errorf("encode responses Lite request body: %w", err)
-	}
-	return rebuilt, true, nil
-}
-
 func normalizeOpenAIResponsesLitePayload(c *gin.Context, body []byte) ([]byte, bool, error) {
 	requestBody, err := decodeOpenAIResponsesJSONObject(body)
 	if err != nil {
