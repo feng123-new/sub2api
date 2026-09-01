@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/viper"
 	"golang.org/x/net/http/httpguts"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -1160,7 +1161,7 @@ type GatewayContextPreflightConfig struct {
 type GatewayOpenAIServerCompactionConfig struct {
 	Mode             string           `mapstructure:"mode"`
 	DefaultThreshold int64            `mapstructure:"default_threshold"`
-	ModelThresholds  map[string]int64 `mapstructure:"model_thresholds"`
+	ModelThresholds  map[string]int64 `mapstructure:"-"`
 }
 
 type GatewayGrokStreamingHedgeConfig struct {
@@ -1191,6 +1192,34 @@ func normalizeGatewayOpenAIServerCompactionConfig(cfg *GatewayOpenAIServerCompac
 		normalized[strings.ToLower(strings.TrimSpace(model))] = threshold
 	}
 	cfg.ModelThresholds = normalized
+}
+
+func loadGatewayOpenAIServerCompactionModelThresholds() (map[string]int64, error) {
+	var thresholds map[string]int64
+	if err := viper.UnmarshalKey("gateway.openai_server_compaction.model_thresholds", &thresholds); err == nil {
+		return thresholds, nil
+	} else if viper.ConfigFileUsed() == "" {
+		return nil, err
+	}
+
+	content, err := os.ReadFile(viper.ConfigFileUsed())
+	if err != nil {
+		return nil, err
+	}
+	var document struct {
+		Gateway struct {
+			OpenAIServerCompaction struct {
+				ModelThresholds *map[string]int64 `yaml:"model_thresholds"`
+			} `yaml:"openai_server_compaction"`
+		} `yaml:"gateway"`
+	}
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return nil, err
+	}
+	if document.Gateway.OpenAIServerCompaction.ModelThresholds == nil {
+		return nil, fmt.Errorf("model_thresholds could not be decoded from Viper")
+	}
+	return *document.Gateway.OpenAIServerCompaction.ModelThresholds, nil
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1860,6 +1889,11 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config error: %w", err)
 	}
+	modelThresholds, err := loadGatewayOpenAIServerCompactionModelThresholds()
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal gateway.openai_server_compaction.model_thresholds: %w", err)
+	}
+	cfg.Gateway.OpenAIServerCompaction.ModelThresholds = modelThresholds
 	if trustedProxiesEnvConfigured {
 		cfg.Server.TrustedProxies = normalizeStringSlice(strings.Split(trustedProxiesEnv, ","))
 	}

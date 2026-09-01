@@ -436,6 +436,25 @@ func TestLoadOpenAIServerCompactionConfig(t *testing.T) {
 	require.Equal(t, map[string]int64{"gpt-5.6-sol": 700000}, cfg.Gateway.OpenAIServerCompaction.ModelThresholds)
 }
 
+func TestLoadOpenAIServerCompactionConfigFromFileWithDottedModelName(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte(`gateway:
+  openai_server_compaction:
+    mode: enforce
+    default_threshold: 0
+    model_thresholds:
+      gpt-5.6-sol: 700000
+`), 0o600))
+	t.Setenv("CONFIG_FILE", configFile)
+
+	cfg, err := Load()
+
+	require.NoError(t, err)
+	require.Equal(t, "enforce", cfg.Gateway.OpenAIServerCompaction.Mode)
+	require.Equal(t, map[string]int64{"gpt-5.6-sol": 700000}, cfg.Gateway.OpenAIServerCompaction.ModelThresholds)
+}
+
 func TestValidateOpenAIServerCompactionConfig(t *testing.T) {
 	tests := []struct {
 		name    string
