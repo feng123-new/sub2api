@@ -1040,31 +1040,6 @@ func (s *OpenAIGatewayService) forward(
 		return nil, wsErr
 	}
 
-	serverCompactionInjected := false
-	if s.cfg != nil {
-		serverCompactionBody, decision, injectErr := applyOpenAIServerCompaction(
-			body,
-			upstreamModel,
-			isCompactRequest,
-			responsesLite,
-			s.cfg.Gateway.OpenAIServerCompaction,
-		)
-		if injectErr != nil {
-			return nil, injectErr
-		}
-		if decision == openAIServerCompactionDecisionInjected {
-			body = serverCompactionBody
-			requestView = newOpenAIRequestView(body)
-			reqBody = nil
-			serverCompactionInjected = true
-		}
-		logOpenAIServerCompactionDecisionOnce(
-			decision,
-			upstreamModel,
-			openAIServerCompactionThreshold(s.cfg.Gateway.OpenAIServerCompaction, upstreamModel),
-		)
-	}
-
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(body, upstreamModel, billingModel, originalModel)
 	// 国产模型默认 effort 补充：此处 reqModel 已被 mapping 重写为 billingModel。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, reqModel)
@@ -1175,20 +1150,6 @@ func (s *OpenAIGatewayService) forward(
 					continue
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
-			}
-			if serverCompactionInjected {
-				retryBody, changed, retryErr := removeRejectedInjectedOpenAIServerCompaction(resp.StatusCode, body, respBody)
-				if retryErr != nil {
-					return nil, retryErr
-				}
-				if changed && rejectedFieldRetryState.Allow(retryBody) {
-					body = retryBody
-					requestView = newOpenAIRequestView(body)
-					reqBody = nil
-					serverCompactionInjected = false
-					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request after injected context_management rejection (account: %s)", account.Name)
-					continue
-				}
 			}
 			if retryBody, reason, changed, retryErr := normalizeOpenAIResponsesRejectedFieldRetryBody(resp.StatusCode, body, respBody); retryErr != nil {
 				return nil, fmt.Errorf("normalize rejected Responses field retry body: %w", retryErr)

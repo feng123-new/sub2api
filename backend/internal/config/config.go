@@ -16,7 +16,6 @@ import (
 
 	"github.com/spf13/viper"
 	"golang.org/x/net/http/httpguts"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -1005,9 +1004,8 @@ type GatewayConfig struct {
 	OpenAIPassthroughAllowTimeoutHeaders bool `mapstructure:"openai_passthrough_allow_timeout_headers"`
 	// OpenAICompactModel: /responses/compact 上游使用的模型。
 	// compact 端点支持模型滞后于普通 /responses 时，可用该配置降级规避上游错误。
-	OpenAICompactModel     string                              `mapstructure:"openai_compact_model"`
-	OpenAIServerCompaction GatewayOpenAIServerCompactionConfig `mapstructure:"openai_server_compaction"`
-	ContextPreflight       GatewayContextPreflightConfig       `mapstructure:"context_preflight"`
+	OpenAICompactModel string                        `mapstructure:"openai_compact_model"`
+	ContextPreflight   GatewayContextPreflightConfig `mapstructure:"context_preflight"`
 	// OpenAIWS: OpenAI Responses WebSocket 配置（默认开启，可按需回滚到 HTTP）
 	OpenAIWS GatewayOpenAIWSConfig `mapstructure:"openai_ws"`
 	// Live: ChatGPT Frameless Live 会话配置。
@@ -1158,12 +1156,6 @@ type GatewayContextPreflightConfig struct {
 	Models    []string `mapstructure:"models"`
 }
 
-type GatewayOpenAIServerCompactionConfig struct {
-	Mode             string           `mapstructure:"mode"`
-	DefaultThreshold int64            `mapstructure:"default_threshold"`
-	ModelThresholds  map[string]int64 `mapstructure:"-"`
-}
-
 type GatewayGrokStreamingHedgeConfig struct {
 	Enabled      bool `mapstructure:"enabled"`
 	DelaySeconds int  `mapstructure:"delay_seconds"`
@@ -1177,49 +1169,6 @@ func normalizeGatewayContextPreflightConfig(cfg *GatewayContextPreflightConfig) 
 	for i, model := range cfg.Models {
 		cfg.Models[i] = strings.ToLower(strings.TrimSpace(model))
 	}
-}
-
-func normalizeGatewayOpenAIServerCompactionConfig(cfg *GatewayOpenAIServerCompactionConfig) {
-	if cfg == nil {
-		return
-	}
-	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
-	if cfg.ModelThresholds == nil {
-		return
-	}
-	normalized := make(map[string]int64, len(cfg.ModelThresholds))
-	for model, threshold := range cfg.ModelThresholds {
-		normalized[strings.ToLower(strings.TrimSpace(model))] = threshold
-	}
-	cfg.ModelThresholds = normalized
-}
-
-func loadGatewayOpenAIServerCompactionModelThresholds() (map[string]int64, error) {
-	var thresholds map[string]int64
-	if err := viper.UnmarshalKey("gateway.openai_server_compaction.model_thresholds", &thresholds); err == nil {
-		return thresholds, nil
-	} else if viper.ConfigFileUsed() == "" {
-		return nil, err
-	}
-
-	content, err := os.ReadFile(viper.ConfigFileUsed())
-	if err != nil {
-		return nil, err
-	}
-	var document struct {
-		Gateway struct {
-			OpenAIServerCompaction struct {
-				ModelThresholds *map[string]int64 `yaml:"model_thresholds"`
-			} `yaml:"openai_server_compaction"`
-		} `yaml:"gateway"`
-	}
-	if err := yaml.Unmarshal(content, &document); err != nil {
-		return nil, err
-	}
-	if document.Gateway.OpenAIServerCompaction.ModelThresholds == nil {
-		return nil, fmt.Errorf("model_thresholds could not be decoded from Viper")
-	}
-	return *document.Gateway.OpenAIServerCompaction.ModelThresholds, nil
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -1889,11 +1838,6 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if err := viper.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config error: %w", err)
 	}
-	modelThresholds, err := loadGatewayOpenAIServerCompactionModelThresholds()
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal gateway.openai_server_compaction.model_thresholds: %w", err)
-	}
-	cfg.Gateway.OpenAIServerCompaction.ModelThresholds = modelThresholds
 	if trustedProxiesEnvConfigured {
 		cfg.Server.TrustedProxies = normalizeStringSlice(strings.Split(trustedProxiesEnv, ","))
 	}
@@ -1972,7 +1916,6 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	cfg.Log.StacktraceLevel = strings.ToLower(strings.TrimSpace(cfg.Log.StacktraceLevel))
 	cfg.Log.Output.FilePath = strings.TrimSpace(cfg.Log.Output.FilePath)
 	normalizeGatewayContextPreflightConfig(&cfg.Gateway.ContextPreflight)
-	normalizeGatewayOpenAIServerCompactionConfig(&cfg.Gateway.OpenAIServerCompaction)
 	cfg.Gateway.ForcedCodexInstructionsTemplateFile = strings.TrimSpace(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
 	if cfg.Gateway.ForcedCodexInstructionsTemplateFile != "" {
 		content, err := os.ReadFile(cfg.Gateway.ForcedCodexInstructionsTemplateFile)
@@ -2457,9 +2400,6 @@ func setDefaults() {
 	viper.SetDefault("gateway.codex_image_generation_bridge_enabled", false)
 	viper.SetDefault("gateway.openai_passthrough_allow_timeout_headers", false)
 	viper.SetDefault("gateway.openai_compact_model", "gpt-5.4")
-	viper.SetDefault("gateway.openai_server_compaction.mode", "off")
-	viper.SetDefault("gateway.openai_server_compaction.default_threshold", int64(0))
-	viper.SetDefault("gateway.openai_server_compaction.model_thresholds", map[string]int64{})
 	viper.SetDefault("gateway.live.max_session_duration_seconds", 3600)
 	viper.SetDefault("gateway.context_preflight.mode", "off")
 	viper.SetDefault("gateway.context_preflight.threshold", 0.90)
@@ -3408,20 +3348,6 @@ func (c *Config) Validate() error {
 	for _, model := range c.Gateway.ContextPreflight.Models {
 		if strings.TrimSpace(model) == "" {
 			return fmt.Errorf("gateway.context_preflight.models must not contain blank entries")
-		}
-	}
-	serverCompactionMode := strings.ToLower(strings.TrimSpace(c.Gateway.OpenAIServerCompaction.Mode))
-	switch serverCompactionMode {
-	case "off", "shadow", "enforce":
-	default:
-		return fmt.Errorf("gateway.openai_server_compaction.mode must be one of: off/shadow/enforce")
-	}
-	if c.Gateway.OpenAIServerCompaction.DefaultThreshold < 0 {
-		return fmt.Errorf("gateway.openai_server_compaction.default_threshold must be non-negative")
-	}
-	for model, threshold := range c.Gateway.OpenAIServerCompaction.ModelThresholds {
-		if strings.TrimSpace(model) == "" || threshold <= 0 {
-			return fmt.Errorf("gateway.openai_server_compaction.model_thresholds must use non-blank models and positive thresholds")
 		}
 	}
 	if strings.TrimSpace(c.Gateway.ConnectionPoolIsolation) != "" {

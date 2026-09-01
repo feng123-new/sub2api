@@ -338,7 +338,9 @@ func TestNewConfiguredCodexModelDescriptorUsesProviderMetadataAndSafeFallback(t 
 	require.True(t, gpt56.SupportsParallelToolCalls)
 	require.True(t, gpt56.SupportVerbosity)
 	require.Equal(t, []string{"text"}, gpt56.InputModalities)
-	require.Equal(t, int64(872_000), gpt56.MaxContextWindow)
+	require.Equal(t, int64(1_047_576), gpt56.ContextWindow)
+	require.Equal(t, int64(1_047_576), gpt56.MaxContextWindow)
+	require.EqualValues(t, 700_000, gpt56.AutoCompactTokenLimit)
 	require.Equal(t, configuredCodexTruncationPolicy{Mode: "tokens", Limit: 10_000}, gpt56.TruncationPolicy)
 	require.NotNil(t, gpt56.DefaultVerbosity)
 	require.Equal(t, "low", *gpt56.DefaultVerbosity)
@@ -1993,6 +1995,9 @@ func TestCompleteAPIKeyCodexModelsManifestForClientUsesKnownGPTImageFallback(t *
 		bySlug[slug] = model
 	}
 	require.Equal(t, []any{"text", "image"}, bySlug["gpt-5.6-sol"]["input_modalities"])
+	require.EqualValues(t, 1_047_576, bySlug["gpt-5.6-sol"]["context_window"])
+	require.EqualValues(t, 1_047_576, bySlug["gpt-5.6-sol"]["max_context_window"])
+	require.EqualValues(t, 700_000, bySlug["gpt-5.6-sol"]["auto_compact_token_limit"])
 	require.Equal(t, []any{"text"}, bySlug["company-coding-model"]["input_modalities"])
 	require.Equal(t, []any{"text"}, bySlug["gpt-4o"]["input_modalities"])
 }
@@ -2210,7 +2215,7 @@ func TestFetchCodexModelsManifestAPIKeyDisablesResponsesLiteForAffectedModels(t 
 	s := newCodexModelsAPIKeyTestService(upstream)
 	manifest, err := s.FetchCodexModelsManifest(context.Background(), newCodexModelsAPIKeyTestAccount("https://upstream.example"), "0.145.0", "")
 	require.NoError(t, err)
-	require.JSONEq(t, `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":false},{"slug":"gpt-5.6-codex","use_responses_lite":true}],"metadata":{"version":1}}`, string(manifest.Body))
+	require.JSONEq(t, `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":false,"context_window":1047576,"max_context_window":1047576,"auto_compact_token_limit":700000},{"slug":"gpt-5.6-codex","use_responses_lite":true}],"metadata":{"version":1}}`, string(manifest.Body))
 	require.Equal(t, codexModelsManifestBodyETag(manifest.Body), manifest.ETag)
 	require.Equal(t, `"upstream-strong"`, manifest.upstreamETag)
 
@@ -2220,9 +2225,10 @@ func TestFetchCodexModelsManifestAPIKeyDisablesResponsesLiteForAffectedModels(t 
 	require.Equal(t, manifest.ETag, notModified.ETag)
 }
 
-func TestFetchCodexModelsManifestOAuthPreservesResponsesLite(t *testing.T) {
-	const manifestBody = ` {"models":[{"slug":"gpt-5.6-sol","use_responses_lite":true}]} `
+func TestFetchCodexModelsManifestOAuthPreservesResponsesLiteAndSetsLocalCompactionMetadata(t *testing.T) {
+	const manifestBody = ` {"models":[{"slug":"gpt-5.6-sol","use_responses_lite":true,"context_window":272000,"max_context_window":872000,"auto_compact_token_limit":null}]} `
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"upstream-oauth"`)
 		_, _ = w.Write([]byte(manifestBody))
 	}))
 	defer server.Close()
@@ -2233,7 +2239,9 @@ func TestFetchCodexModelsManifestOAuthPreservesResponsesLite(t *testing.T) {
 	s := &OpenAIGatewayService{}
 	manifest, err := s.FetchCodexModelsManifest(context.Background(), newCodexModelsTestAccount(), "0.145.0", "")
 	require.NoError(t, err)
-	require.Equal(t, manifestBody, string(manifest.Body))
+	require.JSONEq(t, `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":true,"context_window":1047576,"max_context_window":1047576,"auto_compact_token_limit":700000}]}`, string(manifest.Body))
+	require.Equal(t, codexModelsManifestBodyETag(manifest.Body), manifest.ETag)
+	require.Equal(t, `"upstream-oauth"`, manifest.upstreamETag)
 }
 
 func TestConvertOpenAIModelListToCompleteCodexManifest(t *testing.T) {
@@ -2895,7 +2903,7 @@ func TestFetchCodexModelsManifestAPIKeyRevalidatesStaleETag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stale fetch returned error: %v", err)
 	}
-	if got := string(manifest.Body); got != `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":false}]}` {
+	if got := string(manifest.Body); got != `{"models":[{"auto_compact_token_limit":700000,"context_window":1047576,"max_context_window":1047576,"slug":"gpt-5.6-sol","use_responses_lite":false}]}` {
 		t.Fatalf("stale body: got %q", got)
 	}
 	select {
@@ -2921,7 +2929,7 @@ func TestFetchCodexModelsManifestAPIKeyRevalidatesStaleETag(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	manifest, err = s.FetchCodexModelsManifest(context.Background(), account, "0.144.0", "")
-	if err != nil || string(manifest.Body) != `{"models":[{"slug":"gpt-5.6-sol","use_responses_lite":false}]}` {
+	if err != nil || string(manifest.Body) != `{"models":[{"auto_compact_token_limit":700000,"context_window":1047576,"max_context_window":1047576,"slug":"gpt-5.6-sol","use_responses_lite":false}]}` {
 		t.Fatalf("renewed cached manifest: body=%q err=%v", manifest.Body, err)
 	}
 	if got := calls.Load(); got != 2 {
