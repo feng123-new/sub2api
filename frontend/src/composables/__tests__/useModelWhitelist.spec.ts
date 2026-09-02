@@ -93,6 +93,14 @@ describe('useModelWhitelist', () => {
     expect(models.indexOf('gemini-2.5-flash-image')).toBeLessThan(models.indexOf('gemini-2.5-flash'))
   })
 
+  it('gemini 模型列表包含 3.6 Flash 并保留 3.5 兼容项', () => {
+    const models = getModelsByPlatform('gemini')
+
+    expect(models).toContain('gemini-3.6-flash')
+    expect(models).toContain('gemini-3.5-flash')
+    expect(models.indexOf('gemini-3.6-flash')).toBeLessThan(models.indexOf('gemini-3.5-flash'))
+  })
+
   it('antigravity 模型列表会把新的 Gemini 图片模型排在前面', () => {
     const models = getModelsByPlatform('antigravity')
 

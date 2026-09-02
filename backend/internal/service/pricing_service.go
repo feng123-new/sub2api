@@ -160,16 +160,24 @@ type LiteLLMRawEntry struct {
 	OutputCostPerImage                  *float64 `json:"output_cost_per_image"`
 	OutputCostPerImageToken             *float64 `json:"output_cost_per_image_token"`
 	InputCostPerImageToken              *float64 `json:"input_cost_per_image_token"`
+	MaxInputTokens                      *int     `json:"max_input_tokens"`
+	MaxOutputTokens                     *int     `json:"max_output_tokens"`
+}
+
+type ModelContextLimits struct {
+	MaxInputTokens  int
+	MaxOutputTokens int
 }
 
 // PricingService 动态价格服务
 type PricingService struct {
-	cfg          *config.Config
-	remoteClient PricingRemoteClient
-	mu           sync.RWMutex
-	pricingData  map[string]*LiteLLMModelPricing
-	lastUpdated  time.Time
-	localHash    string
+	cfg           *config.Config
+	remoteClient  PricingRemoteClient
+	mu            sync.RWMutex
+	pricingData   map[string]*LiteLLMModelPricing
+	contextLimits map[string]ModelContextLimits
+	lastUpdated   time.Time
+	localHash     string
 
 	// 停止信号
 	stopCh chan struct{}
@@ -179,10 +187,11 @@ type PricingService struct {
 // NewPricingService 创建价格服务
 func NewPricingService(cfg *config.Config, remoteClient PricingRemoteClient) *PricingService {
 	s := &PricingService{
-		cfg:          cfg,
-		remoteClient: remoteClient,
-		pricingData:  make(map[string]*LiteLLMModelPricing),
-		stopCh:       make(chan struct{}),
+		cfg:           cfg,
+		remoteClient:  remoteClient,
+		pricingData:   make(map[string]*LiteLLMModelPricing),
+		contextLimits: make(map[string]ModelContextLimits),
+		stopCh:        make(chan struct{}),
 	}
 	return s
 }
@@ -383,7 +392,7 @@ func (s *PricingService) downloadPricingData() error {
 	}
 
 	// 解析JSON数据（使用灵活的解析方式）
-	data, err := s.parsePricingData(body)
+	data, contextLimits, err := s.parsePricingCatalog(body)
 	if err != nil {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
@@ -411,6 +420,7 @@ func (s *PricingService) downloadPricingData() error {
 	s.mu.Lock()
 	warnDroppedLongContextLadders(s.pricingData, data)
 	s.pricingData = data
+	s.contextLimits = contextLimits
 	s.lastUpdated = time.Now()
 	s.localHash = syncHash
 	s.mu.Unlock()
@@ -421,14 +431,20 @@ func (s *PricingService) downloadPricingData() error {
 
 // parsePricingData 解析价格数据（处理各种格式）
 func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModelPricing, error) {
+	data, _, err := s.parsePricingCatalog(body)
+	return data, err
+}
+
+func (s *PricingService) parsePricingCatalog(body []byte) (map[string]*LiteLLMModelPricing, map[string]ModelContextLimits, error) {
 	// 首先解析为 map[string]json.RawMessage
 	var rawData map[string]json.RawMessage
 	if err := json.Unmarshal(body, &rawData); err != nil {
-		return nil, fmt.Errorf("parse raw JSON: %w", err)
+		return nil, nil, fmt.Errorf("parse raw JSON: %w", err)
 	}
 	rawData = s.applyPricingOverrides(rawData)
 
 	result := make(map[string]*LiteLLMModelPricing)
+	contextLimits := make(map[string]ModelContextLimits)
 	skipped := 0
 	var orphanCacheTiers, lopsidedLadders []string
 
@@ -443,6 +459,14 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		if err := json.Unmarshal(rawEntry, &entry); err != nil {
 			skipped++
 			continue
+		}
+		canonicalModelName := strings.ToLower(strings.TrimSpace(modelName))
+		if canonicalModelName != "" && entry.MaxInputTokens != nil && *entry.MaxInputTokens > 0 {
+			limits := ModelContextLimits{MaxInputTokens: *entry.MaxInputTokens}
+			if entry.MaxOutputTokens != nil && *entry.MaxOutputTokens > 0 {
+				limits.MaxOutputTokens = *entry.MaxOutputTokens
+			}
+			contextLimits[canonicalModelName] = limits
 		}
 
 		// 只保留有有效价格的条目
@@ -527,11 +551,11 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 	warnOrphanCacheTierFields(orphanCacheTiers)
 	warnLopsidedLongContextLadders(lopsidedLadders)
 
-	if len(result) == 0 {
-		return nil, fmt.Errorf("no valid pricing entries found")
+	if len(result) == 0 && len(contextLimits) == 0 {
+		return nil, nil, fmt.Errorf("no valid pricing entries found")
 	}
 
-	return result, nil
+	return result, contextLimits, nil
 }
 
 // deriveLongContextFromAboveTierFields 把 LiteLLM 目录的 *_above_XXXk_tokens 绝对价字段
@@ -806,7 +830,7 @@ func (s *PricingService) loadPricingData(filePath string) error {
 	}
 
 	// 使用灵活的解析方式
-	pricingData, err := s.parsePricingData(data)
+	pricingData, contextLimits, err := s.parsePricingCatalog(data)
 	if err != nil {
 		return fmt.Errorf("parse pricing data: %w", err)
 	}
@@ -820,6 +844,7 @@ func (s *PricingService) loadPricingData(filePath string) error {
 	s.mu.Lock()
 	warnDroppedLongContextLadders(s.pricingData, pricingData)
 	s.pricingData = pricingData
+	s.contextLimits = contextLimits
 	s.localHash = hashStr
 
 	info, _ := os.Stat(filePath)
@@ -832,6 +857,23 @@ func (s *PricingService) loadPricingData(filePath string) error {
 
 	logger.LegacyPrintf("service.pricing", "[Pricing] Loaded %d models from %s", len(pricingData), filePath)
 	return nil
+}
+
+func (s *PricingService) GetExactModelContextLimits(model string) (ModelContextLimits, bool) {
+	if s == nil {
+		return ModelContextLimits{}, false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return ModelContextLimits{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	limits, ok := s.contextLimits[model]
+	if !ok || limits.MaxInputTokens <= 0 {
+		return ModelContextLimits{}, false
+	}
+	return limits, true
 }
 
 func (s *PricingService) mergeFallbackPricingData(data map[string]*LiteLLMModelPricing) map[string]*LiteLLMModelPricing {

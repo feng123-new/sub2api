@@ -945,7 +945,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *te
 	c.Request.Header.Set("User-Agent", "codex_cli_rs/0.1.0")
 
 	// store=true + stream=false should be forced to store=false + stream=true by applyCodexOAuthTransform (OAuth legacy path)
-	inputBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"text","text":"hi"}]}`)
+	inputBody := []byte(`{"model":"gpt-5.2","stream":false,"store":true,"input":[{"type":"text","text":"hi"}],"tools":[{"type":"function","name":"lookup","defer_loading":true}]}`)
 
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -979,6 +979,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_DisabledUsesLegacyTransform(t *te
 	require.NotEqual(t, inputBody, upstream.lastBody)
 	require.Contains(t, string(upstream.lastBody), `"store":false`)
 	require.Contains(t, string(upstream.lastBody), `"stream":true`)
+	require.False(t, gjson.GetBytes(upstream.lastBody, "tools.0.defer_loading").Bool())
 }
 
 func TestOpenAIGatewayService_OAuthLegacy_GroupForceOpenAIFastInjectsMissingTier(t *testing.T) {

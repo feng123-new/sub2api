@@ -16,8 +16,8 @@ import (
 // GET {base_url}/models?client_version=... (custom provider mode) or
 // GET /backend-api/codex/models (chatgpt_base_url mode). Both routes land
 // here. Groups with explicit account model mappings are generated locally;
-// otherwise ChatGPT manifests are proxied verbatim and custom API key manifests
-// receive provider-compatibility normalization plus short-lived caching.
+// otherwise upstream manifests receive targeted local-compaction metadata,
+// while custom API key manifests also receive provider-compatibility normalization.
 func (h *OpenAIGatewayHandler) CodexModels(c *gin.Context) {
 	if c.Request.Context().Err() != nil {
 		return

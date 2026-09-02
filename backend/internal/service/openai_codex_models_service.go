@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -311,6 +312,8 @@ const (
 	configuredCodexGrokContext         = 500_000
 	configuredCodexGrokBuildContext    = 256_000
 	configuredCodexGPT56MaxContext     = 872_000
+	configuredCodexGPT56SolContext     = 1_047_576
+	configuredCodexGPT56SolAutoCompact = 700_000
 	configuredCodexToolOutputMaxTokens = 10_000
 )
 
@@ -487,7 +490,11 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.SupportedReasoningLevels = configuredCodexGPTReasoningLevels(modelID)
 			descriptor.DefaultReasoningSummary = "none"
 			descriptor.TruncationPolicy = configuredCodexTruncationPolicy{Mode: "tokens", Limit: configuredCodexToolOutputMaxTokens}
-			if isOpenAIGPT56Model(modelID) {
+			if getNormalizedCodexModel(modelID) == "gpt-5.6-sol" {
+				descriptor.ContextWindow = configuredCodexGPT56SolContext
+				descriptor.MaxContextWindow = configuredCodexGPT56SolContext
+				descriptor.AutoCompactTokenLimit = int64(configuredCodexGPT56SolAutoCompact)
+			} else if isOpenAIGPT56Model(modelID) {
 				descriptor.MaxContextWindow = configuredCodexGPT56MaxContext
 			}
 		}
@@ -1466,9 +1473,9 @@ func (c *codexModelsManifestCache) set(key string, manifest *CodexModelsManifest
 // FetchCodexModelsManifest fetches the live Codex models manifest from either
 // the ChatGPT backend for OAuth accounts or a custom upstream for API key accounts.
 //
-// After validating the stable top-level envelope, OAuth response bodies are
-// passed through verbatim. Custom API key manifests receive only the narrowly
-// scoped compatibility adjustments required by custom-provider Codex clients.
+// After validating the stable top-level envelope, targeted local-compaction
+// metadata is applied. Custom API key manifests also receive the narrowly scoped
+// compatibility adjustments required by custom-provider Codex clients.
 func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, account *Account, clientVersion, ifNoneMatch string) (*CodexModelsManifest, error) {
 	if account == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_ACCOUNT_REQUIRED", "account is required")
@@ -1806,18 +1813,28 @@ func (s *OpenAIGatewayService) fetchCodexModelsManifestUpstream(ctx context.Cont
 			}
 		}
 	}
+	body, err = applyCodexLocalCompactionMetadata(body)
+	if err != nil {
+		return nil, &codexModelsManifestUpstreamError{
+			err: infraerrors.Newf(
+				http.StatusBadGateway,
+				"OPENAI_CODEX_MODELS_UPSTREAM_INVALID_MANIFEST",
+				"codex models manifest local compaction metadata could not be applied: %v",
+				err,
+			),
+			retryable: true,
+		}
+	}
 	etag := resp.Header.Get("ETag")
 	manifest := &CodexModelsManifest{
 		Body:                         body,
 		ETag:                         etag,
+		upstreamETag:                 etag,
 		upstreamSourceBody:           append([]byte(nil), upstreamBody...),
 		convertedFromOpenAIModelList: convertedFromOpenAIModelList,
 	}
-	if request.useAPIKeyUpstream {
-		manifest.upstreamETag = etag
-		if !bytes.Equal(body, upstreamBody) {
-			manifest.ETag = codexModelsManifestBodyETag(body)
-		}
+	if !bytes.Equal(body, upstreamBody) {
+		manifest.ETag = codexModelsManifestBodyETag(body)
 	}
 	return manifest, nil
 }
@@ -1882,6 +1899,58 @@ func adjustAPIKeyCodexModelsManifest(body []byte) ([]byte, error) {
 		return body, nil
 	}
 
+	adjustedModels, err := json.Marshal(models)
+	if err != nil {
+		return nil, fmt.Errorf("encode top-level models array: %w", err)
+	}
+	envelope["models"] = adjustedModels
+	adjusted, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("encode JSON object: %w", err)
+	}
+	return adjusted, nil
+}
+
+func applyCodexLocalCompactionMetadata(body []byte) ([]byte, error) {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("decode JSON object: %w", err)
+	}
+	var models []json.RawMessage
+	if err := json.Unmarshal(envelope["models"], &models); err != nil {
+		return nil, fmt.Errorf("decode top-level models array: %w", err)
+	}
+
+	contextWindow := json.RawMessage(strconv.FormatInt(configuredCodexGPT56SolContext, 10))
+	autoCompactTokenLimit := json.RawMessage(strconv.Itoa(configuredCodexGPT56SolAutoCompact))
+	changed := false
+	for i, rawModel := range models {
+		var model map[string]json.RawMessage
+		if err := json.Unmarshal(rawModel, &model); err != nil || model == nil {
+			continue
+		}
+		var slug string
+		if err := json.Unmarshal(model["slug"], &slug); err != nil || strings.TrimSpace(slug) != "gpt-5.6-sol" {
+			continue
+		}
+		if bytes.Equal(bytes.TrimSpace(model["context_window"]), contextWindow) &&
+			bytes.Equal(bytes.TrimSpace(model["max_context_window"]), contextWindow) &&
+			bytes.Equal(bytes.TrimSpace(model["auto_compact_token_limit"]), autoCompactTokenLimit) {
+			continue
+		}
+		model["context_window"] = contextWindow
+		model["max_context_window"] = contextWindow
+		model["auto_compact_token_limit"] = autoCompactTokenLimit
+		adjusted, err := json.Marshal(model)
+		if err != nil {
+			return nil, fmt.Errorf("encode model %q: %w", slug, err)
+		}
+		models[i] = adjusted
+		changed = true
+	}
+	if !changed {
+		return body, nil
+	}
 	adjustedModels, err := json.Marshal(models)
 	if err != nil {
 		return nil, fmt.Errorf("encode top-level models array: %w", err)
@@ -1977,6 +2046,10 @@ func (s *OpenAIGatewayService) CompleteAPIKeyCodexModelsManifestForClient(manife
 		return err
 	}
 	body, err = adjustAPIKeyCodexModelsManifest(body)
+	if err != nil {
+		return err
+	}
+	body, err = applyCodexLocalCompactionMetadata(body)
 	if err != nil {
 		return err
 	}

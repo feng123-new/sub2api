@@ -170,9 +170,9 @@ export default {
       },
       grok: {
         description:
-          'Configure Grok CLI, Claude Code, Codex, or OpenCode to send requests through your Sub2API Grok group. Text models use Responses; image/video use Imagine model IDs on media endpoints.',
-        claudeDescription: 'Configure Claude Code to send Messages API traffic through your Sub2API Grok group.',
-        codexDescription: 'Configure Codex to send Responses API traffic through your Sub2API Grok group.',
+          'Configure Grok CLI, Claude Code, Codex, or OpenCode to send requests through your 畅联服务 Grok group. Text models use Responses; image/video use Imagine model IDs on media endpoints.',
+        claudeDescription: 'Configure Claude Code to send Messages API traffic through your 畅联服务 Grok group.',
+        codexDescription: 'Configure Codex to send Responses API traffic through your 畅联服务 Grok group.',
         configTomlHint:
           'Official path: ~/.grok/config.toml (or $GROK_HOME). Fill [endpoints] (models_base_url / models_list_url / xai_api_base_url / cli_chat_proxy_base_url), [auth] preferred_method=api_key, [models], [session], and [features] image/video overrides. Prefer env_key over api_key; every text model needs api_backend=responses. Back up before merge, then run grok inspect.',
         codexConfigTomlHint:

@@ -743,6 +743,101 @@ func TestListModelNamesByProvider_EmptyCatalog(t *testing.T) {
 	require.Empty(t, got)
 }
 
+func TestPricingService_LoadPricingData_RetainsContextLimitsBeforePricingFiltering(t *testing.T) {
+	svc := NewPricingService(nil, nil)
+	filePath := filepath.Join(t.TempDir(), "model-pricing.json")
+	require.NoError(t, os.WriteFile(filePath, []byte(`{
+		" Context-Only-Model ": {"max_input_tokens": 64000, "max_output_tokens": 8192},
+		"priced-model": {"input_cost_per_token": 0.000001, "max_input_tokens": 32000, "max_output_tokens": 4096}
+	}`), 0644))
+	require.NoError(t, svc.loadPricingData(filePath))
+	require.NotContains(t, svc.pricingData, " Context-Only-Model ")
+	limits, found := svc.GetExactModelContextLimits("context-only-model")
+	require.True(t, found)
+	require.Equal(t, 64000, limits.MaxInputTokens)
+	require.Equal(t, 8192, limits.MaxOutputTokens)
+}
+
+func TestPricingService_LoadBundledCatalogPreservesContextAndImageInputPricing(t *testing.T) {
+	svc := NewPricingService(nil, nil)
+	filePath := filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json")
+	require.NoError(t, svc.loadPricingData(filePath))
+
+	limits, found := svc.GetExactModelContextLimits("gpt-5.5")
+	require.True(t, found)
+	require.Equal(t, 1050000, limits.MaxInputTokens)
+	require.Equal(t, 128000, limits.MaxOutputTokens)
+	require.InDelta(t, 0.000008, svc.pricingData["gpt-image-2"].InputCostPerImageToken, 1e-12)
+}
+
+func TestPricingService_LoadPricingData_AllowsContextOnlyCatalog(t *testing.T) {
+	svc := NewPricingService(nil, nil)
+	filePath := filepath.Join(t.TempDir(), "model-pricing.json")
+	require.NoError(t, os.WriteFile(filePath, []byte(`{
+		"context-only-model": {"max_input_tokens": 64000, "max_output_tokens": 8192}
+	}`), 0644))
+	require.NoError(t, svc.loadPricingData(filePath))
+	limits, found := svc.GetExactModelContextLimits("context-only-model")
+	require.True(t, found)
+	require.Equal(t, 64000, limits.MaxInputTokens)
+	require.Equal(t, 8192, limits.MaxOutputTokens)
+}
+
+func TestPricingService_LoadPricingData_DoesNotUseMergedFallbackContextLimits(t *testing.T) {
+	dir := t.TempDir()
+	primaryFile := filepath.Join(dir, "primary.json")
+	fallbackFile := filepath.Join(dir, "fallback.json")
+	require.NoError(t, os.WriteFile(primaryFile, []byte(`{
+		"primary-model": {"input_cost_per_token": 0.000001, "max_input_tokens": 64000}
+	}`), 0644))
+	require.NoError(t, os.WriteFile(fallbackFile, []byte(`{
+		"fallback-only-model": {"input_cost_per_token": 0.000001, "max_input_tokens": 32000}
+	}`), 0644))
+	svc := NewPricingService(&config.Config{}, nil)
+	svc.cfg.Pricing.FallbackFile = fallbackFile
+	require.NoError(t, svc.loadPricingData(primaryFile))
+	require.NotNil(t, svc.pricingData["fallback-only-model"])
+	_, found := svc.GetExactModelContextLimits("fallback-only-model")
+	require.False(t, found)
+}
+
+func TestPricingService_GetExactModelContextLimits_OnlyMatchesCanonicalExactIDs(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.4": {InputCostPerToken: 1}, "gpt-5.6-sol": {InputCostPerToken: 1},
+		},
+		contextLimits: map[string]ModelContextLimits{
+			"gpt-5.4": {MaxInputTokens: 32000}, "gpt-5.6-sol": {MaxInputTokens: 128000, MaxOutputTokens: 16384},
+		},
+	}
+	for _, model := range []string{"gPt-5.6-SoL", " \tgpt-5.6-sol\n "} {
+		limits, found := svc.GetExactModelContextLimits(model)
+		require.True(t, found, model)
+		require.Equal(t, 128000, limits.MaxInputTokens, model)
+	}
+	for _, model := range []string{"gpt-5.6", "openai/gpt-5.6-sol", "gpt-5.4-20260101"} {
+		require.NotNil(t, svc.GetModelPricing(model), model)
+		_, found := svc.GetExactModelContextLimits(model)
+		require.False(t, found, model)
+	}
+	billingSvc := NewBillingService(&config.Config{}, svc)
+	limits, found := billingSvc.GetExactModelContextLimits(" GPT-5.6-SOL ")
+	require.True(t, found)
+	require.Equal(t, 128000, limits.MaxInputTokens)
+}
+
+func TestPricingService_GetExactModelContextLimits_HandlesNilServices(t *testing.T) {
+	var pricingSvc *PricingService
+	_, found := pricingSvc.GetExactModelContextLimits("gpt-5.6-sol")
+	require.False(t, found)
+	billingSvc := NewBillingService(&config.Config{}, nil)
+	_, found = billingSvc.GetExactModelContextLimits("gpt-5.6-sol")
+	require.False(t, found)
+	var nilBillingSvc *BillingService
+	_, found = nilBillingSvc.GetExactModelContextLimits("gpt-5.6-sol")
+	require.False(t, found)
+}
+
 // --- above_XXXk 绝对价字段折算为阈值+倍率 ---
 
 func TestParsePricingData_DerivesLongContextFromAboveTierFields(t *testing.T) {

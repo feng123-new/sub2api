@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -24,101 +25,136 @@ func FlattenResponsesNamespacesExcept(req map[string]any, preserved map[string]b
 	if req == nil {
 		return nil, false, nil
 	}
-	tools, ok := req["tools"].([]any)
-	if !ok || len(tools) == 0 {
+	tools, _ := req["tools"].([]any)
+	declarationLists := responsesNamespaceDeclarationLists(req, tools)
+	if len(declarationLists) == 0 {
 		return nil, false, nil
 	}
 
 	topLevel := make(map[string]bool)
-	for _, raw := range tools {
-		tool, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		typ := strings.TrimSpace(stringValue(tool["type"]))
-		name := strings.TrimSpace(stringValue(tool["name"]))
-		if (typ == "function" || typ == "custom") && name != "" {
-			topLevel[name] = true
+	for _, declarations := range declarationLists {
+		for _, raw := range declarations {
+			tool, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			typ := strings.TrimSpace(stringValue(tool["type"]))
+			name := strings.TrimSpace(stringValue(tool["name"]))
+			if (typ == "function" || typ == "custom") && name != "" {
+				topLevel[name] = true
+			}
 		}
 	}
 
 	names := make(map[string]ResponsesNamespaceName)
-	for _, raw := range tools {
-		tool, ok := raw.(map[string]any)
-		if !ok || strings.TrimSpace(stringValue(tool["type"])) != "namespace" {
-			continue
-		}
-		namespace := strings.TrimSpace(stringValue(tool["name"]))
-		if namespace == "" || preserved[namespace] {
-			continue
-		}
-		for _, rawChild := range namespaceChildren(tool) {
-			child, ok := rawChild.(map[string]any)
-			if !ok || strings.TrimSpace(stringValue(child["type"])) != "function" {
+	topLevelNames := make(map[string]ResponsesNamespaceName)
+	topLevelNamespaces := make(map[string]bool)
+	for declarationIndex, declarations := range declarationLists {
+		fromTopLevel := len(tools) > 0 && declarationIndex == 0
+		for _, raw := range declarations {
+			tool, ok := raw.(map[string]any)
+			if !ok || strings.TrimSpace(stringValue(tool["type"])) != "namespace" {
 				continue
 			}
-			name := strings.TrimSpace(stringValue(child["name"]))
-			if name == "" {
+			namespace := strings.TrimSpace(stringValue(tool["name"]))
+			if namespace == "" || preserved[namespace] {
 				continue
 			}
-			flat := flattenNamespaceToolName(namespace, name)
-			entry := ResponsesNamespaceName{Namespace: namespace, Name: name}
-			if topLevel[flat] {
-				return nil, false, fmt.Errorf("namespace tool %q/%q flattens to %q which conflicts with a top-level tool of the same name; this upstream cannot disambiguate them, rename one of the tools", namespace, name, flat)
+			if fromTopLevel {
+				topLevelNamespaces[namespace] = true
 			}
-			if prev, exists := names[flat]; exists && prev != entry {
-				return nil, false, fmt.Errorf("namespace tools %q/%q and %q/%q both flatten to %q; this upstream cannot disambiguate them, rename one of the tools", prev.Namespace, prev.Name, namespace, name, flat)
+			for _, rawChild := range namespaceChildren(tool) {
+				child, ok := rawChild.(map[string]any)
+				if !ok || strings.TrimSpace(stringValue(child["type"])) != "function" {
+					continue
+				}
+				name := strings.TrimSpace(stringValue(child["name"]))
+				if name == "" {
+					continue
+				}
+				flat := flattenNamespaceToolName(namespace, name)
+				entry := ResponsesNamespaceName{Namespace: namespace, Name: name}
+				if topLevel[flat] {
+					return nil, false, fmt.Errorf("namespace tool %q/%q flattens to %q which conflicts with a top-level tool of the same name; this upstream cannot disambiguate them, rename one of the tools", namespace, name, flat)
+				}
+				if prev, exists := names[flat]; exists && prev != entry {
+					return nil, false, fmt.Errorf("namespace tools %q/%q and %q/%q both flatten to %q; this upstream cannot disambiguate them, rename one of the tools", prev.Namespace, prev.Name, namespace, name, flat)
+				}
+				names[flat] = entry
+				if fromTopLevel {
+					topLevelNames[flat] = entry
+				}
 			}
-			names[flat] = entry
 		}
 	}
 	if len(names) == 0 {
 		return nil, false, nil
 	}
 
-	flattened := make([]any, 0, len(tools)+len(names))
-	seen := make(map[string]bool)
-	for _, raw := range tools {
-		tool, ok := raw.(map[string]any)
-		if !ok || strings.TrimSpace(stringValue(tool["type"])) != "namespace" {
-			flattened = append(flattened, raw)
-			continue
-		}
-		namespace := strings.TrimSpace(stringValue(tool["name"]))
-		if preserved[namespace] {
-			flattened = append(flattened, raw)
-			continue
-		}
-		for _, rawChild := range namespaceChildren(tool) {
-			child, ok := rawChild.(map[string]any)
-			if !ok || strings.TrimSpace(stringValue(child["type"])) != "function" {
+	if len(tools) > 0 {
+		flattened := make([]any, 0, len(tools)+len(names))
+		seen := make(map[string]bool)
+		for _, raw := range tools {
+			tool, ok := raw.(map[string]any)
+			if !ok || strings.TrimSpace(stringValue(tool["type"])) != "namespace" {
+				flattened = append(flattened, raw)
 				continue
 			}
-			name := strings.TrimSpace(stringValue(child["name"]))
-			flat := flattenNamespaceToolName(namespace, name)
-			if name == "" || seen[flat] {
+			namespace := strings.TrimSpace(stringValue(tool["name"]))
+			if preserved[namespace] {
+				flattened = append(flattened, raw)
 				continue
 			}
-			seen[flat] = true
-			flatChild := make(map[string]any, len(child))
-			for key, value := range child {
-				flatChild[key] = value
+			for _, rawChild := range namespaceChildren(tool) {
+				child, ok := rawChild.(map[string]any)
+				if !ok || strings.TrimSpace(stringValue(child["type"])) != "function" {
+					continue
+				}
+				name := strings.TrimSpace(stringValue(child["name"]))
+				flat := flattenNamespaceToolName(namespace, name)
+				if name == "" || seen[flat] {
+					continue
+				}
+				seen[flat] = true
+				flatChild := make(map[string]any, len(child))
+				for key, value := range child {
+					flatChild[key] = value
+				}
+				flatChild["name"] = flat
+				flattened = append(flattened, flatChild)
 			}
-			flatChild["name"] = flat
-			flattened = append(flattened, flatChild)
 		}
+		req["tools"] = flattened
 	}
-	req["tools"] = flattened
 	rewriteNamespaceQualifiedCalls(req["input"], names)
 	if choice, ok := req["tool_choice"].(map[string]any); ok {
 		choiceNamespace := strings.TrimSpace(stringValue(choice["name"]))
-		if strings.TrimSpace(stringValue(choice["type"])) == "namespace" && !preserved[choiceNamespace] {
+		if strings.TrimSpace(stringValue(choice["type"])) == "namespace" && topLevelNamespaces[choiceNamespace] {
 			req["tool_choice"] = "auto"
 		} else {
-			rewriteNamespaceQualifiedCall(choice, names)
+			rewriteNamespaceQualifiedCall(choice, topLevelNames)
 		}
 	}
 	return names, true, nil
+}
+
+func responsesNamespaceDeclarationLists(req map[string]any, topLevel []any) [][]any {
+	lists := make([][]any, 0, 1)
+	if len(topLevel) > 0 {
+		lists = append(lists, topLevel)
+	}
+	input, _ := req["input"].([]any)
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || strings.TrimSpace(stringValue(item["type"])) != "additional_tools" {
+			continue
+		}
+		tools, _ := item["tools"].([]any)
+		if len(tools) > 0 {
+			lists = append(lists, tools)
+		}
+	}
+	return lists
 }
 
 // RestoreResponsesNamespaceCalls restores flattened function calls in a JSON
@@ -127,8 +163,8 @@ func RestoreResponsesNamespaceCalls(payload []byte, names map[string]ResponsesNa
 	if len(payload) == 0 || len(names) == 0 {
 		return payload, false, nil
 	}
-	var value any
-	if err := json.Unmarshal(payload, &value); err != nil {
+	value, err := decodeResponsesNamespaceJSONValue(payload)
+	if err != nil {
 		return payload, false, err
 	}
 	changed := restoreResponsesNamespaceValue(value, names)
@@ -142,6 +178,23 @@ func RestoreResponsesNamespaceCalls(payload []byte, names map[string]ResponsesNa
 		return payload, false, err
 	}
 	return bytes.TrimSuffix(rebuilt.Bytes(), []byte("\n")), true, nil
+}
+
+func decodeResponsesNamespaceJSONValue(payload []byte) (any, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("unexpected trailing JSON value")
+	}
+	return value, nil
 }
 
 func namespaceChildren(tool map[string]any) []any {
@@ -159,7 +212,8 @@ func rewriteNamespaceQualifiedCalls(value any, names map[string]ResponsesNamespa
 			rewriteNamespaceQualifiedCalls(item, names)
 		}
 	case map[string]any:
-		if strings.TrimSpace(stringValue(typed["type"])) == "function_call" {
+		itemType := strings.TrimSpace(stringValue(typed["type"]))
+		if itemType == "function_call" || itemType == "function_call_output" {
 			rewriteNamespaceQualifiedCall(typed, names)
 		}
 		for _, child := range typed {

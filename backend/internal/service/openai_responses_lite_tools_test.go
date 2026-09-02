@@ -5,6 +5,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -340,7 +341,7 @@ func TestNormalizeOpenAIResponsesLiteToolsPayload_PreservesResponseCreateShape(t
 		"tool_choice":{"type":"namespace","name":"collaboration"}
 	}`)
 
-	updated, changed, err := normalizeOpenAIResponsesLiteToolsPayload(body)
+	updated, changed, err := normalizeOpenAIResponsesLitePayload(nil, body)
 
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -353,6 +354,8 @@ func TestNormalizeOpenAIResponsesLiteToolsPayload_PreservesResponseCreateShape(t
 }
 
 func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	body := []byte(`{
 		"type":"response.create",
 		"sequence":900719925474099312345,
@@ -363,7 +366,9 @@ func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T
 		name      string
 		normalize func([]byte) ([]byte, bool, error)
 	}{
-		{name: "OAuth-like tools normalization", normalize: normalizeOpenAIResponsesLiteToolsPayload},
+		{name: "OAuth-like tools normalization", normalize: func(body []byte) ([]byte, bool, error) {
+			return normalizeOpenAIResponsesLitePayload(c, body)
+		}},
 		{name: "API key parallel normalization", normalize: normalizeOpenAIResponsesLiteParallelToolCallsPayload},
 	}
 
@@ -378,6 +383,134 @@ func TestNormalizeOpenAIResponsesLitePayloads_PreserveLargeSequence(t *testing.T
 			require.False(t, gjson.GetBytes(updated, "parallel_tool_calls").Bool())
 		})
 	}
+}
+
+func TestNormalizeOpenAIResponsesLitePayload_RewritesHistoryAndForcesReasoningContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{
+		"model":"gpt-5.6-terra",
+		"reasoning":{"effort":"high","context":"current_turn"},
+		"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}],
+		"input":[{"type":"function_call","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"}],
+		"tool_choice":{"type":"namespace","name":"collaboration"}
+	}`)
+
+	updated, changed, err := normalizeOpenAIResponsesLitePayload(c, body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "high", gjson.GetBytes(updated, "reasoning.effort").String())
+	require.Equal(t, "all_turns", gjson.GetBytes(updated, "reasoning.context").String())
+	require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(updated, "input.0.name").String())
+	require.False(t, gjson.GetBytes(updated, "input.0.namespace").Exists())
+	require.Equal(t, "collaboration", gjson.GetBytes(updated, `input.#(type=="additional_tools").tools.0.name`).String())
+	require.Equal(t, "namespace", gjson.GetBytes(updated, "tool_choice.type").String())
+
+	restored, err := restoreOpenAIResponsesNamespacePayload(c, []byte(`{"type":"function_call","name":"collaboration__spawn_agent","arguments":"{}"}`))
+	require.NoError(t, err)
+	require.Equal(t, "spawn_agent", gjson.GetBytes(restored, "name").String())
+	require.Equal(t, "collaboration", gjson.GetBytes(restored, "namespace").String())
+}
+
+func TestNormalizeOpenAIResponsesLitePayload_RewritesAdditionalToolsOnlyNamespaceHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := []byte(`{
+		"model":"gpt-5.6-terra",
+		"input":[
+			{"type":"additional_tools","role":"developer","tools":[
+				{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]},
+				{"type":"namespace","name":"image_gen","tools":[{"type":"function","name":"imagegen"}]}
+			]},
+			{"type":"function_call","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","output":"ok"},
+			{"type":"function_call","call_id":"call_image","name":"imagegen","namespace":"image_gen","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_image","name":"imagegen","namespace":"image_gen","output":"ok"}
+		]
+	}`)
+
+	updated, changed, err := normalizeOpenAIResponsesLitePayload(c, body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(updated, "tools").Exists())
+	require.Equal(t, "collaboration", gjson.GetBytes(updated, "input.0.tools.0.name").String())
+	require.Equal(t, "image_gen", gjson.GetBytes(updated, "input.0.tools.1.name").String())
+	for _, index := range []int{1, 2} {
+		require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(updated, fmt.Sprintf("input.%d.name", index)).String())
+		require.False(t, gjson.GetBytes(updated, fmt.Sprintf("input.%d.namespace", index)).Exists())
+	}
+	for _, index := range []int{3, 4} {
+		require.Equal(t, "imagegen", gjson.GetBytes(updated, fmt.Sprintf("input.%d.name", index)).String())
+		require.Equal(t, "image_gen", gjson.GetBytes(updated, fmt.Sprintf("input.%d.namespace", index)).String())
+	}
+
+	restored, err := restoreOpenAIResponsesNamespacePayload(c, []byte(`{"type":"function_call","name":"collaboration__spawn_agent","arguments":"{}"}`))
+	require.NoError(t, err)
+	require.Equal(t, "spawn_agent", gjson.GetBytes(restored, "name").String())
+	require.Equal(t, "collaboration", gjson.GetBytes(restored, "namespace").String())
+}
+
+func TestNormalizeOpenAIResponsesLitePayload_RejectsNonObjectReasoning(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-terra","reasoning":"high","input":"hello"}`)
+
+	updated, changed, err := normalizeOpenAIResponsesLitePayload(nil, body)
+
+	require.ErrorContains(t, err, "reasoning to be an object")
+	require.False(t, changed)
+	require.Equal(t, body, updated)
+}
+
+func TestNormalizeOpenAIResponsesLitePayload_PreservesExactNumbersAfterNamespaceRewrite(t *testing.T) {
+	tests := []struct {
+		name   string
+		number string
+	}{
+		{name: "integer beyond float64 exact range", number: "9007199254740993"},
+		{name: "large negative integer", number: "-9007199254740993123456789"},
+		{name: "high precision decimal", number: "12345678901234567890.123456789"},
+		{name: "high precision exponent", number: "1.234567890123456789e+123"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			body := []byte(`{
+				"model":"gpt-5.6-terra",
+				"tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}],
+				"input":[{"type":"function_call","name":"spawn_agent","namespace":"collaboration","marker":` + tt.number + `}]
+			}`)
+
+			updated, changed, err := normalizeOpenAIResponsesLitePayload(c, body)
+
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.Equal(t, tt.number, gjson.GetBytes(updated, "input.0.marker").Raw, string(updated))
+			require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(updated, "input.0.name").String())
+		})
+	}
+}
+
+func TestNormalizeOpenAIResponsesLitePayload_RejectsTrailingJSONValue(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-terra","input":"hello"} {"extra":true}`)
+
+	updated, changed, err := normalizeOpenAIResponsesLitePayload(nil, body)
+
+	require.ErrorContains(t, err, "decode responses Lite request body")
+	require.False(t, changed)
+	require.Equal(t, body, updated)
+}
+
+func TestNormalizeOpenAIResponsesLitePayload_PreservesLargeExponent(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.6-terra","input":{"marker":1e1000}}`)
+
+	updated, changed, err := normalizeOpenAIResponsesLitePayload(nil, body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "1e1000", gjson.GetBytes(updated, "input.marker").Raw, string(updated))
 }
 
 func TestApplyCodexOAuthTransform_PreservesLiteNamespaceToolChoice(t *testing.T) {
@@ -437,7 +570,10 @@ func TestOpenAIGatewayServiceForward_NormalizesResponsesLiteToolsForOAuth(t *tes
 					{"type":"tool_search"},
 					{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object"}}]}
 				],
-				"input":[{"type":"message","role":"user","content":"hello"}],
+				"input":[
+					{"type":"message","role":"user","content":"hello"},
+					{"type":"function_call","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"}
+				],
 				"tool_choice":{"type":"namespace","name":"collaboration"}
 			}`)
 
@@ -457,6 +593,8 @@ func TestOpenAIGatewayServiceForward_NormalizesResponsesLiteToolsForOAuth(t *tes
 			require.Equal(t, "collaboration", gjson.GetBytes(upstream.lastBody, "tool_choice.name").String())
 			require.True(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Exists())
 			require.False(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
+			require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call").name`).String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, `input.#(type=="function_call").namespace`).Exists())
 
 			badRec := httptest.NewRecorder()
 			badCtx, _ := gin.CreateTestContext(badRec)
@@ -609,6 +747,59 @@ func TestOpenAIGatewayServiceForward_DisablesParallelToolCallsForResponsesLiteAP
 			require.True(t, gjson.GetBytes(upstream.lastBody, "tools").IsArray())
 			require.True(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Exists())
 			require.False(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceForward_NormalizesAdditionalToolsOnlyNamespaceHistoryForOAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, passthrough := range []bool{false, true} {
+		name := "managed"
+		if passthrough {
+			name = "passthrough"
+		}
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(nil))
+			c.Request.Header.Set("User-Agent", "codex_cli_rs/0.144.1")
+			c.Request.Header.Set(responsesLiteHeader, "true")
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_lite\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n" +
+						"data: [DONE]\n\n",
+				)),
+			}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			account := &Account{
+				ID: 502, Name: "responses-lite", Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+				Concurrency: 1, Status: StatusActive, Schedulable: true, RateMultiplier: f64p(1),
+				Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
+				Extra:       map[string]any{"openai_passthrough": passthrough},
+			}
+			body := []byte(`{
+				"model":"gpt-5.6-terra","stream":true,
+				"input":[
+					{"type":"additional_tools","role":"developer","tools":[{"type":"namespace","name":"collaboration","tools":[{"type":"function","name":"spawn_agent"}]}]},
+					{"type":"function_call","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}"},
+					{"type":"function_call_output","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","output":"ok"}
+				],
+				"tool_choice":{"type":"namespace","name":"collaboration"}
+			}`)
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(upstream.lastBody, "input.1.name").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "input.1.namespace").Exists())
+			require.Equal(t, "collaboration__spawn_agent", gjson.GetBytes(upstream.lastBody, "input.2.name").String())
+			require.False(t, gjson.GetBytes(upstream.lastBody, "input.2.namespace").Exists())
+			require.Equal(t, "namespace", gjson.GetBytes(upstream.lastBody, "tool_choice.type").String())
+			require.Equal(t, "collaboration", gjson.GetBytes(upstream.lastBody, "tool_choice.name").String())
 		})
 	}
 }

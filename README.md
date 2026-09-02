@@ -18,6 +18,10 @@ English | [中文](README_CN.md) | [日本語](README_JA.md)
 
 </div>
 
+> This branch contains the Changlian production customizations. See
+> [docs/CHANGLIAN_MAINTENANCE.md](docs/CHANGLIAN_MAINTENANCE.md) before merging an
+> upstream release or promoting a production image.
+
 ## ⚠️ Important Notice
 
 Please read the following carefully before using this project:

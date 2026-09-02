@@ -1177,7 +1177,7 @@ model_catalog_json = "${escapeTomlBasicString(codexModelCatalogPath.value)}"
 # windows_wsl_setup_acknowledged = true
 
 [model_providers.sub2api]
-name = "Sub2API Grok"
+name = "畅联服务 Grok"
 base_url = "${baseUrl}"
 # Prefer env_key (variable NAME). Do not combine with experimental_bearer_token.
 env_key = "SUB2API_API_KEY"
@@ -1509,6 +1509,17 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
           budgetTokens: 24576,
           type: 'enabled'
         }
+      }
+    },
+    'gemini-3.6-flash': {
+      name: 'Gemini 3.6 Flash',
+      limit: {
+        context: 1048576,
+        output: 65536
+      },
+      modalities: {
+        input: ['text', 'image', 'pdf'],
+        output: ['text']
       }
     },
     'gemini-3.5-flash': {
