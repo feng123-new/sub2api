@@ -154,6 +154,25 @@ func passthroughLifecycleAccount() *Account {
 	}
 }
 
+func TestOpenAIWSCloseReasonForWire_ValidUTF8WithinRFC6455Limit(t *testing.T) {
+	t.Run("multibyte boundary", func(t *testing.T) {
+		reason := strings.Repeat("a", 121) + "界" + "tail"
+
+		got := openAIWSCloseReasonForWire(reason)
+
+		require.LessOrEqual(t, len(got), openAIWSMaxCloseReasonBytes)
+		require.True(t, utf8.ValidString(got))
+		require.Equal(t, strings.Repeat("a", 121), got)
+	})
+
+	t.Run("invalid utf8", func(t *testing.T) {
+		got := openAIWSCloseReasonForWire("bad\xffreason")
+
+		require.Equal(t, "badreason", got)
+		require.True(t, utf8.ValidString(got))
+	})
+}
+
 func startPassthroughLifecycleServer(
 	t *testing.T,
 	controlCtx context.Context,
@@ -539,6 +558,35 @@ func TestPassthroughLifecycle_LeaseLossSendsRetryClose(t *testing.T) {
 	case <-serverErr:
 	case <-time.After(3 * time.Second):
 		t.Fatal("passthrough lease-loss reader did not exit")
+	}
+}
+
+func TestPassthroughLifecycle_LeaseLossBeforeFirstDownstreamSendsRetryClose(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	upstream := newStagedPassthroughConn()
+	server, serverErr := startPassthroughLifecycleServer(t, controlCtx, newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream), passthroughLifecycleAccount())
+	defer server.Close()
+	clientConn := dialPassthroughLifecycleClient(t, server)
+	defer func() { _ = clientConn.CloseNow() }()
+
+	select {
+	case <-upstream.writes:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first upstream request was not written")
+	}
+	cancelControl(ErrOpenAIWSIngressLeaseLost)
+	require.NoError(t, upstream.Close())
+
+	_, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	var closeErr coderws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	require.Equal(t, coderws.StatusTryAgainLater, closeErr.Code)
+	require.Equal(t, "websocket ingress capacity lease lost; please reconnect", closeErr.Reason)
+	select {
+	case <-serverErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough preamble lease-loss reader did not exit")
 	}
 }
 

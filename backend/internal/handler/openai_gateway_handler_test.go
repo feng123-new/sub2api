@@ -1147,6 +1147,7 @@ func TestOpenAIResponsesWebSocket_IngressLeaseReleasedOnEarlyReturn(t *testing.T
 	var closeErr coderws.CloseError
 	require.ErrorAs(t, err, &closeErr)
 	require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+	require.Contains(t, closeErr.Reason, "binary")
 	require.Eventually(t, func() bool {
 		return atomic.LoadInt32(&cache.releaseIngressCalled) == 1
 	}, time.Second, 10*time.Millisecond)

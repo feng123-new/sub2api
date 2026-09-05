@@ -136,7 +136,7 @@ func TestContentModerationCallRoutesThroughProxy(t *testing.T) {
 	cfg.normalize()
 
 	httpStatus := 0
-	if _, err := svc.callModerationOnceWithInput(context.Background(), cfg, "sk-test", "hello", &httpStatus); err != nil {
+	if _, err := svc.callModerationOnceWithInput(context.Background(), cfg, "sk-test", "hello", &httpStatus, nil); err != nil {
 		t.Fatalf("expected moderation call via proxy to succeed, got: %v", err)
 	}
 	if proxied.Load() == 0 {
@@ -163,7 +163,7 @@ func TestContentModerationProxyResolveFailureDoesNotFallBackToDirect(t *testing.
 	cfg.normalize()
 
 	httpStatus := 0
-	_, err := svc.callModerationOnceWithInput(context.Background(), cfg, "sk-test", "hello", &httpStatus)
+	_, err := svc.callModerationOnceWithInput(context.Background(), cfg, "sk-test", "hello", &httpStatus, nil)
 	if err == nil || !strings.Contains(err.Error(), "resolve moderation proxy") {
 		t.Fatalf("expected proxy resolve error, got: %v", err)
 	}

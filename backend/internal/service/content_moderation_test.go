@@ -457,6 +457,34 @@ func TestMatchBlockedKeyword_CaseInsensitiveSubstring(t *testing.T) {
 	require.False(t, hit)
 }
 
+func TestMatchBlockedKeywordAppliesBoundariesOnlyToWordRuneEdges(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		keyword string
+		wantHit bool
+	}{
+		{name: "trailing punctuation skips following boundary", text: "C++17", keyword: "C++", wantHit: true},
+		{name: "leading word rune still requires preceding boundary", text: "XC++", keyword: "C++"},
+		{name: "leading punctuation skips preceding boundary", text: "file.exe", keyword: ".exe", wantHit: true},
+		{name: "trailing word rune still requires following boundary", text: ".exe2", keyword: ".exe"},
+		{name: "multibyte leading word rune requires preceding boundary", text: "Xé+", keyword: "é+"},
+		{name: "multibyte trailing word rune requires following boundary", text: ".é2", keyword: ".é"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyword, hit := matchBlockedKeyword(tt.text, []string{tt.keyword})
+			require.Equal(t, tt.wantHit, hit)
+			if tt.wantHit {
+				require.Equal(t, tt.keyword, keyword)
+			} else {
+				require.Empty(t, keyword)
+			}
+		})
+	}
+}
+
 func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T) {
 	upstreamCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1379,6 +1407,30 @@ func TestContentModerationCallModeration_FreezesByHTTPStatus(t *testing.T) {
 			require.LessOrEqual(t, remaining, tt.maxFreeze)
 		})
 	}
+}
+
+func TestContentModerationCallModeration_429HonorsRetryAfter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.RetryCount = 0
+	svc := NewContentModerationService(nil, nil, nil, nil, nil, nil, nil, nil)
+
+	_, err := svc.callModeration(context.Background(), cfg, "hello")
+	require.Error(t, err)
+
+	status := svc.apiKeyStatusForHash(0, moderationAPIKeyHash("sk-test"), maskSecretTail("sk-test"), true)
+	require.NotNil(t, status.FrozenUntil)
+	remaining := time.Until(*status.FrozenUntil)
+	require.GreaterOrEqual(t, remaining, 6*time.Second)
+	require.LessOrEqual(t, remaining, 8*time.Second)
 }
 
 func TestContentModerationTestAPIKeys_400DoesNotFreezeAPIKey(t *testing.T) {

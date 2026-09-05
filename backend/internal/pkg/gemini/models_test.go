@@ -41,3 +41,14 @@ func TestHasFallbackModel_RecognizesCustomtoolsModel(t *testing.T) {
 		t.Fatalf("did not expect unknown model to exist in fallback catalog")
 	}
 }
+
+func TestHasFallbackModel_RecognizesGemini36Flash(t *testing.T) {
+	t.Parallel()
+
+	if !HasFallbackModel("gemini-3.6-flash") {
+		t.Fatalf("expected Gemini 3.6 Flash to exist in fallback catalog")
+	}
+	if !HasFallbackModel("models/gemini-3.6-flash") {
+		t.Fatalf("expected prefixed Gemini 3.6 Flash to exist in fallback catalog")
+	}
+}

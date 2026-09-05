@@ -29,6 +29,20 @@ import type {
   OllamaCloudUsageState
 } from '@/types'
 
+export interface AccountTestEvent {
+  type: string
+  text?: string
+  model?: string
+  success?: boolean
+  error?: string
+  image_url?: string
+  audio_url?: string
+  video_url?: string
+  mime_type?: string
+  ttft_ms?: number
+  duration_ms?: number
+}
+
 /**
  * List all accounts with pagination
  * @param page - Page number (default: 1)

@@ -1205,6 +1205,13 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	return nil, fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
 }
 
+func (s *BillingService) GetExactModelContextLimits(model string) (ModelContextLimits, bool) {
+	if s == nil || s.pricingService == nil {
+		return ModelContextLimits{}, false
+	}
+	return s.pricingService.GetExactModelContextLimits(model)
+}
+
 // GetModelPricingWithChannel 获取模型定价，渠道配置的价格覆盖默认值
 // 渠道存在时，未配置的图片输出价格归零（不回退到 LiteLLM）
 func (s *BillingService) GetModelPricingWithChannel(model string, channelPricing *ChannelModelPricing) (*ModelPricing, error) {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -713,8 +714,20 @@ func toolsContainImageGeneration(rawTools any) bool {
 }
 
 func isOpenAIImageGenerationToolMap(tool map[string]any) bool {
-	return isOpenAIImageGenerationType(firstNonEmptyString(tool["type"])) ||
-		isImageGenNamespaceToolMap(tool)
+	if isOpenAIImageGenerationType(firstNonEmptyString(tool["type"])) || isImageGenNamespaceToolMap(tool) {
+		return true
+	}
+	if isOpenAIImageGenFunctionReference(
+		firstNonEmptyString(tool["namespace"]),
+		firstNonEmptyString(tool["name"]),
+	) {
+		return true
+	}
+	function, ok := tool["function"].(map[string]any)
+	return ok && isOpenAIImageGenFunctionReference(
+		firstNonEmptyString(function["namespace"]),
+		firstNonEmptyString(function["name"]),
+	)
 }
 
 func isImageGenNamespaceToolMap(tool map[string]any) bool {
@@ -822,15 +835,24 @@ func stripOpenAIImageGenerationToolsFromInput(reqBody map[string]any) bool {
 // stripOpenAIImageGenerationToolsFromRawPayload is the shared adapter for paths
 // that forward raw HTTP or WebSocket payloads without the normal request map.
 func stripOpenAIImageGenerationToolsFromRawPayload(payload []byte) ([]byte, bool, error) {
-	if !openAIRequestBodyHasImageGenerationDeclaration(payload) {
-		if json.Valid(payload) {
-			return payload, false, nil
-		}
+	if !json.Valid(payload) {
 		var invalidPayload map[string]any
 		return payload, false, json.Unmarshal(payload, &invalidPayload)
 	}
+	if err := ValidateOpenAIImagePolicyPayload(payload); err != nil {
+		return payload, false, err
+	}
+	return stripOpenAIImageGenerationToolsFromValidatedRawPayload(payload)
+}
+
+func stripOpenAIImageGenerationToolsFromValidatedRawPayload(payload []byte) ([]byte, bool, error) {
+	if !openAIRequestBodyHasImageGenerationDeclaration(payload) {
+		return payload, false, nil
+	}
 	payloadMap := make(map[string]any)
-	if err := json.Unmarshal(payload, &payloadMap); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payloadMap); err != nil {
 		return payload, false, err
 	}
 	if !stripOpenAIImageGenerationTools(payloadMap) {

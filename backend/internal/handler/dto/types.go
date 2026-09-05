@@ -757,6 +757,9 @@ type UserSubscription struct {
 	DailyWindowStart   *time.Time `json:"daily_window_start"`
 	WeeklyWindowStart  *time.Time `json:"weekly_window_start"`
 	MonthlyWindowStart *time.Time `json:"monthly_window_start"`
+	DailyResetsAt      *time.Time `json:"daily_resets_at"`
+	WeeklyResetsAt     *time.Time `json:"weekly_resets_at"`
+	MonthlyResetsAt    *time.Time `json:"monthly_resets_at"`
 
 	DailyUsageUSD   float64 `json:"daily_usage_usd"`
 	WeeklyUsageUSD  float64 `json:"weekly_usage_usd"`

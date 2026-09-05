@@ -381,6 +381,29 @@ func TestApplyOpenAIFastPolicyToBody_OfficialTiersBypassDefaultRule(t *testing.T
 	}
 }
 
+func TestApplyOpenAIFastPolicyToBody_OAuthDropsUnsupportedAutoTier(t *testing.T) {
+	svc := newOpenAIGatewayServiceWithSettings(t, DefaultOpenAIFastPolicySettings())
+	body := []byte(`{"model":"gpt-5.5","service_tier":"auto"}`)
+
+	oauthBody, err := svc.applyOpenAIFastPolicyToBody(
+		context.Background(),
+		&Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+		"gpt-5.5",
+		body,
+	)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(oauthBody, "service_tier").Exists())
+
+	apiKeyBody, err := svc.applyOpenAIFastPolicyToBody(
+		context.Background(),
+		&Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		"gpt-5.5",
+		body,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "auto", gjson.GetBytes(apiKeyBody, "service_tier").String())
+}
+
 // TestApplyOpenAIFastPolicyToBody_AllRuleStripsOfficialTiers 验证管理员显式配置
 // ServiceTier=all + Action=filter 规则后，auto/default/scale 等官方 tier 也会
 // 被剥离。这是符合预期的——首条匹配 short-circuit，"all" 覆盖任意已识别 tier。

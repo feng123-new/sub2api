@@ -1553,6 +1553,39 @@ func TestBillingServiceGetModelPricing_UsesDynamicPriorityFields(t *testing.T) {
 	require.InDelta(t, 1.5, pricing.LongContextOutputMultiplier, 1e-12)
 }
 
+func TestBillingServiceGetModelPricing_GPT55DynamicFastUsesOfficialMultiplier(t *testing.T) {
+	pricingSvc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.5": {
+				InputCostPerToken:                   5e-6,
+				InputCostPerTokenPriority:           10e-6,
+				OutputCostPerToken:                  30e-6,
+				OutputCostPerTokenPriority:          60e-6,
+				CacheCreationInputTokenCost:         5e-6,
+				CacheCreationInputTokenCostPriority: 10e-6,
+				CacheReadInputTokenCost:             0.5e-6,
+				CacheReadInputTokenCostPriority:     1e-6,
+				LongContextInputTokenThreshold:      272000,
+				LongContextInputCostMultiplier:      2.0,
+				LongContextOutputCostMultiplier:     1.5,
+			},
+		},
+	}
+	svc := NewBillingService(&config.Config{}, pricingSvc)
+	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50, CacheCreationTokens: 40, CacheReadTokens: 20}
+
+	standardCost, err := svc.CalculateCostWithServiceTier("gpt-5.5", tokens, 1.0, "default")
+	require.NoError(t, err)
+	fastCost, err := svc.CalculateCostWithServiceTier("gpt-5.5", tokens, 1.0, "fast")
+	require.NoError(t, err)
+
+	require.InDelta(t, standardCost.InputCost*2.5, fastCost.InputCost, 1e-10)
+	require.InDelta(t, standardCost.OutputCost*2.5, fastCost.OutputCost, 1e-10)
+	require.InDelta(t, standardCost.CacheCreationCost*2.5, fastCost.CacheCreationCost, 1e-10)
+	require.InDelta(t, standardCost.CacheReadCost*2.5, fastCost.CacheReadCost, 1e-10)
+	require.InDelta(t, standardCost.TotalCost*2.5, fastCost.TotalCost, 1e-10)
+}
+
 func TestBillingServiceGetModelPricing_OpenAIFallbackGpt52Variants(t *testing.T) {
 	svc := newTestBillingService()
 
