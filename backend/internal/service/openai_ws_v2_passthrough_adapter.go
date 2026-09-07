@@ -1258,6 +1258,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					return payload, nil, err
 				}
 			}
+			if hooks != nil && hooks.BeforeTurn != nil {
+				if err := hooks.BeforeTurn(turnNo); err != nil {
+					return payload, nil, err
+				}
+			}
 			if hooks != nil && hooks.MapRequestModel != nil {
 				upstreamModel, err := hooks.MapRequestModel(turnNo, requestModelForThisFrame)
 				if err != nil {
@@ -1318,11 +1323,6 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			}
 			if preflightErr := s.runOpenAIWSContextPreflight(ctx, c, preflightBody, contextPolicyModel); preflightErr != nil {
 				return out, nil, preflightErr
-			}
-			if hooks != nil && hooks.BeforeTurn != nil {
-				if err := hooks.BeforeTurn(turnNo); err != nil {
-					return out, nil, err
-				}
 			}
 			if imageConfigErr := imageTurns.push(out, contextPolicyModel, account.Platform); imageConfigErr != nil {
 				return out, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", imageConfigErr)
@@ -1552,6 +1552,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					truncateOpenAIWSLogValue(errTypeRaw, openAIWSLogValueMaxLen),
 					truncateOpenAIWSLogValue(errMsgRaw, openAIWSLogValueMaxLen),
 				)
+				if completedTurns.Load() > 0 {
+					return NewOpenAIWSClientCloseError(
+						coderws.StatusTryAgainLater,
+						"upstream rate limit exceeded; please reconnect",
+						errors.New("later passthrough turn was rate limited before output"),
+					)
+				}
 				return s.newOpenAIWSRateLimitFailoverError(account, handshakeHeaders, payload, errMsgRaw)
 			},
 			OnTrace: func(event openaiwsv2.RelayTraceEvent) {
