@@ -159,6 +159,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		}
 	}
 	upstreamBody = applyOllamaCloudRawChatCompletionsRequest(account, upstreamBody)
+	upstreamBody = clampOllamaCloudUpstreamMaxTokens(account, upstreamBody)
 	if err := s.runOpenAIContextPreflight(ctx, c, openAIContextPreflightEndpointChatCompletions, upstreamBody, upstreamModel); err != nil {
 		return nil, err
 	}
