@@ -65,15 +65,17 @@ func TestPrepareOpenAICompactFallbackRetryPreservesNativeTriggerAndContext(t *te
 
 func TestResolveOpenAICompactFallbackModelPrefersAccountMapping(t *testing.T) {
 	svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{OpenAICompactModel: "global-compact"}}}
-	account := &Account{Credentials: map[string]any{
+	oauthAccount := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: map[string]any{
 		"compact_model_mapping": map[string]any{"gpt-5.5": "account-compact"},
 	}}
+	apiKeyAccount := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
 
-	require.Equal(t, "account-compact", svc.resolveOpenAICompactFallbackModel(account, "gpt-5.5"))
-	require.Equal(t, "global-compact", svc.resolveOpenAICompactFallbackModel(account, "unmapped-model"))
+	require.Equal(t, "account-compact", svc.resolveOpenAICompactFallbackModel(oauthAccount, "gpt-5.5"))
+	require.Empty(t, svc.resolveOpenAICompactFallbackModel(oauthAccount, "unmapped-model"))
+	require.Equal(t, "global-compact", svc.resolveOpenAICompactFallbackModel(apiKeyAccount, "unmapped-model"))
 }
 
-func TestOpenAIGatewayForwardUsesGlobalCompactModelOnInitialLegacyRequest(t *testing.T) {
+func TestOpenAIGatewayForwardSkipsGlobalCompactModelForOAuthLegacyRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	body := []byte(`{"model":"gpt-5.5","stream":false,"instructions":"compact-test","input":[]}`)
 	c := newOpenAICompactFallbackTestContext(t, "/v1/responses/compact")
@@ -82,7 +84,7 @@ func TestOpenAIGatewayForwardUsesGlobalCompactModelOnInitialLegacyRequest(t *tes
 	upstream := &httpUpstreamRecorder{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
-		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","status":"completed","model":"global-compact","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_compact","status":"completed","model":"gpt-5.5","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)),
 	}}
 	svc := &OpenAIGatewayService{
 		cfg:          &config.Config{Gateway: config.GatewayConfig{OpenAICompactModel: "global-compact"}},
@@ -99,7 +101,7 @@ func TestOpenAIGatewayForwardUsesGlobalCompactModelOnInitialLegacyRequest(t *tes
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Len(t, upstream.bodies, 1)
-	require.Equal(t, "global-compact", gjson.GetBytes(upstream.bodies[0], "model").String())
+	require.Equal(t, "gpt-5.5", gjson.GetBytes(upstream.bodies[0], "model").String())
 	require.Contains(t, upstream.requests[0].URL.Path, "/compact")
 }
 
@@ -203,8 +205,12 @@ func TestOpenAIGatewayForwardRetriesExplicitNativeCompactHTTPFailureOnce(t *test
 	}
 	account := &Account{
 		ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
-		Status:      StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"access_token":          "oauth-token",
+			"chatgpt_account_id":    "chatgpt-account",
+			"compact_model_mapping": map[string]any{"gpt-5.5": "gpt-5.4"},
+		},
+		Status: StatusActive, Schedulable: true,
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, body)
@@ -233,8 +239,12 @@ func compactFallbackManagedProxyAccount() (*Account, *Proxy) {
 	proxy := &Proxy{ID: 10060, Name: "wldsg82-ipv6-10060", Protocol: "http", Host: "proxy.example", Port: 8080}
 	return &Account{
 		ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
-		Status:      StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"access_token":          "oauth-token",
+			"chatgpt_account_id":    "chatgpt-account",
+			"compact_model_mapping": map[string]any{"gpt-5.5": "gpt-5.4"},
+		},
+		Status: StatusActive, Schedulable: true,
 		ProxyID: &proxy.ID, Proxy: proxy,
 	}, proxy
 }
@@ -368,8 +378,12 @@ func TestOpenAIGatewayForwardRetriesExplicitNativeCompactSSEFailureBeforeOutput(
 	}
 	account := &Account{
 		ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
-		Status:      StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"access_token":          "oauth-token",
+			"chatgpt_account_id":    "chatgpt-account",
+			"compact_model_mapping": map[string]any{"gpt-5.5": "gpt-5.4"},
+		},
+		Status: StatusActive, Schedulable: true,
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, body)
@@ -407,8 +421,12 @@ func TestOpenAIGatewayForwardRetriesStreamingCompactFailureBeforeOutput(t *testi
 	}
 	account := &Account{
 		ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
-		Status:      StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"access_token":          "oauth-token",
+			"chatgpt_account_id":    "chatgpt-account",
+			"compact_model_mapping": map[string]any{"gpt-5.5": "gpt-5.4"},
+		},
+		Status: StatusActive, Schedulable: true,
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, body)
@@ -446,8 +464,12 @@ func TestOpenAIGatewayForwardDoesNotRecurseWhenCompactFallbackAlsoFails(t *testi
 	}
 	account := &Account{
 		ID: 1, Name: "openai-oauth", Platform: PlatformOpenAI, Type: AccountTypeOAuth, Concurrency: 1,
-		Credentials: map[string]any{"access_token": "oauth-token", "chatgpt_account_id": "chatgpt-account"},
-		Status:      StatusActive, Schedulable: true,
+		Credentials: map[string]any{
+			"access_token":          "oauth-token",
+			"chatgpt_account_id":    "chatgpt-account",
+			"compact_model_mapping": map[string]any{"gpt-5.5": "gpt-5.4"},
+		},
+		Status: StatusActive, Schedulable: true,
 	}
 
 	result, err := svc.Forward(context.Background(), c, account, body)

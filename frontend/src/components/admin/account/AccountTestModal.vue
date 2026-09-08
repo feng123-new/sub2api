@@ -316,14 +316,24 @@
       </Teleport>
 
       <!-- Test Info -->
-      <div class="flex items-center justify-between px-1 text-xs text-gray-500 dark:text-gray-400">
-        <div class="flex items-center gap-3">
-          <span class="flex items-center gap-1">
-            <Icon name="grid" size="sm" :stroke-width="2" />
-            {{ t('admin.accounts.testModel') }}
+      <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1 text-xs text-gray-500 dark:text-gray-400">
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          <span class="flex min-w-0 max-w-full items-center gap-1">
+            <Icon name="grid" size="sm" class="shrink-0" :stroke-width="2" />
+            <span class="shrink-0">{{ t('admin.accounts.testModel') }}:</span>
+            <span class="min-w-0 truncate font-mono text-gray-700 dark:text-gray-200">
+              {{ displayedTestModel }}
+            </span>
+          </span>
+          <span v-if="actualModel" class="flex min-w-0 max-w-full items-center gap-1">
+            <Icon name="grid" size="sm" class="shrink-0" :stroke-width="2" />
+            <span class="shrink-0">{{ t('admin.accounts.actualModel') }}:</span>
+            <span class="min-w-0 truncate font-mono text-gray-700 dark:text-gray-200">
+              {{ actualModel }}
+            </span>
           </span>
         </div>
-        <span class="flex items-center gap-1">
+        <span class="flex shrink-0 items-center gap-1">
           <Icon name="chat" size="sm" :stroke-width="2" />
           {{ testModeSummary }}
         </span>
@@ -421,6 +431,8 @@ const ttftMs = ref<number | null>(null)
 const durationMs = ref<number | null>(null)
 const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
+const testModel = ref('')
+const actualModel = ref('')
 const testPrompt = ref('')
 const loadingModels = ref(false)
 let abortController: AbortController | null = null
@@ -438,6 +450,7 @@ const uploadAudioName = ref('')
 const imageFileInput = ref<HTMLInputElement | null>(null)
 const audioFileInput = ref<HTMLInputElement | null>(null)
 const hasTimingMetrics = computed(() => ttftMs.value !== null || durationMs.value !== null)
+const displayedTestModel = computed(() => testModel.value || selectedModelId.value)
 const isOpenAIAccount = computed(() => props.account?.platform === 'openai')
 const isGrokAccount = computed(() => props.account?.platform === 'grok')
 const openAITestModeOptions = computed(() => [
@@ -817,6 +830,8 @@ const resetState = () => {
   generatedAudios.value = []
   generatedVideos.value = []
   previewImageUrl.value = ''
+  testModel.value = ''
+  actualModel.value = ''
 }
 
 const handleClose = () => {
@@ -959,6 +974,7 @@ const startTest = async () => {
 const handleEvent = (event: AccountTestEvent) => {
   switch (event.type) {
     case 'test_start':
+      testModel.value = event.model || selectedModelId.value
       addLine(t('admin.accounts.connectedToApi'), 'text-green-400')
       if (event.model) {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
@@ -1031,6 +1047,9 @@ const handleEvent = (event: AccountTestEvent) => {
       break
 
     case 'test_complete':
+      if (event.model) {
+        actualModel.value = event.model
+      }
       // Move streaming content to output lines
       if (streamingContent.value) {
         addLine(streamingContent.value, 'text-green-300')

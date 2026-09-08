@@ -2871,6 +2871,7 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 func (s *AccountTestService) processOpenAIStreamWithTiming(c *gin.Context, body io.Reader, timing *accountTestStreamTiming) error {
 	reader := bufio.NewReader(body)
 	seenCompleted := false
+	actualModel := ""
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -2903,6 +2904,14 @@ func (s *AccountTestService) processOpenAIStreamWithTiming(c *gin.Context, body 
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
 			continue
 		}
+		if model, ok := data["model"].(string); ok && strings.TrimSpace(model) != "" {
+			actualModel = strings.TrimSpace(model)
+		}
+		if responseData, ok := data["response"].(map[string]any); ok {
+			if model, ok := responseData["model"].(string); ok && strings.TrimSpace(model) != "" {
+				actualModel = strings.TrimSpace(model)
+			}
+		}
 
 		eventType, _ := data["type"].(string)
 		if timing != nil && openAIStreamDataStartsClientOutput(jsonStr, eventType) {
@@ -2916,7 +2925,9 @@ func (s *AccountTestService) processOpenAIStreamWithTiming(c *gin.Context, body 
 				s.sendEvent(c, TestEvent{Type: "content", Text: delta})
 			}
 		case "response.completed", "response.done":
-			s.sendEvent(c, timing.complete(time.Now()))
+			event := timing.complete(time.Now())
+			event.Model = actualModel
+			s.sendEvent(c, event)
 			return nil
 		case "response.failed":
 			errorMsg := "OpenAI response failed"

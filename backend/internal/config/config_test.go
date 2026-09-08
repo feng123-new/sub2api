@@ -625,12 +625,12 @@ func TestLoadOpenAIWSForceHTTPFromEnv(t *testing.T) {
 	require.True(t, cfg.Gateway.OpenAIWS.ForceHTTP)
 }
 
-func TestLoadDefaultOpenAICompactModel(t *testing.T) {
+func TestLoadDefaultOpenAICompactModelDisabled(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
 	cfg, err := Load()
 	require.NoError(t, err)
-	require.Equal(t, "gpt-5.4", cfg.Gateway.OpenAICompactModel)
+	require.Empty(t, cfg.Gateway.OpenAICompactModel)
 }
 
 func TestLoadOpenAICompactModelFromEnv(t *testing.T) {

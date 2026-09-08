@@ -2003,7 +2003,7 @@ func sanitizeOpsSSEDataForPersistence(body []byte) string {
 
 func inferResponsesFailedOpsErrorType(code string) string {
 	switch strings.TrimSpace(code) {
-	case "rate_limit_exceeded":
+	case "rate_limit_exceeded", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
 		return "rate_limit_error"
 	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
 		return "permission_error"
@@ -2025,7 +2025,7 @@ func inferStreamFailureStatus(_ *gin.Context, parsed parsedOpsError) int {
 		return parsed.StatusCode
 	}
 	switch strings.TrimSpace(parsed.Code) {
-	case "rate_limit_exceeded":
+	case "rate_limit_exceeded", gatewayConcurrencyLimitCode, gatewayQueueFullCode:
 		return http.StatusTooManyRequests
 	case "permission_denied", "permission_error", "insufficient_permissions", "cyber_policy", "content_policy":
 		return http.StatusForbidden

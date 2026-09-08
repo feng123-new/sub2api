@@ -49,9 +49,9 @@ func isExplicitOpenAICompactRequest(c *gin.Context, body []byte) bool {
 	return isOpenAIResponsesCompactPath(c) || HasCompactionTriggerInInput(body)
 }
 
-// resolveOpenAICompactFallbackModel prefers the account's compact-only rule
-// for the client-visible model. The process-wide fallback is used only when
-// that account has no matching compact rule.
+// resolveOpenAICompactFallbackModel prefers the account's compact-only rule.
+// The global fallback is limited to non-ChatGPT credentials because OAuth-like
+// accounts do not share API-key model capabilities.
 func (s *OpenAIGatewayService) resolveOpenAICompactFallbackModel(account *Account, requestedModel string) string {
 	requestedModel = strings.TrimSpace(requestedModel)
 	if account != nil {
@@ -59,6 +59,9 @@ func (s *OpenAIGatewayService) resolveOpenAICompactFallbackModel(account *Accoun
 			if mapped = strings.TrimSpace(mapped); mapped != "" {
 				return mapped
 			}
+		}
+		if account.IsOpenAIOAuthLike() {
+			return ""
 		}
 	}
 	if s == nil || s.cfg == nil {

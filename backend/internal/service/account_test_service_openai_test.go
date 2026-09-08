@@ -106,7 +106,7 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	ctx, recorder := newTestContext()
 
 	resp := newJSONResponse(http.StatusOK, "")
-	resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.completed"}
+	resp.Body = io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"model":"provider-reported-model"}}
 
 `))
 	resp.Header.Set("x-codex-primary-used-percent", "88")
@@ -135,6 +135,7 @@ func TestAccountTestService_OpenAISuccessPersistsSnapshotFromHeaders(t *testing.
 	require.Equal(t, 42.0, repo.updatedExtra["codex_5h_used_percent"])
 	require.Equal(t, 88.0, repo.updatedExtra["codex_7d_used_percent"])
 	require.Contains(t, recorder.Body.String(), "test_complete")
+	require.Contains(t, recorder.Body.String(), `"model":"provider-reported-model"`)
 }
 
 func TestAccountTestService_OpenAIOAuthTestNormalizesGPT56Alias(t *testing.T) {

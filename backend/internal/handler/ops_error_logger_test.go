@@ -1735,6 +1735,18 @@ func TestParseOpsSSEFailure_TopLevelErrorsAndUnknownStatus(t *testing.T) {
 			wantStatus: http.StatusServiceUnavailable,
 		},
 		{
+			name:       "responses gateway concurrency limit",
+			body:       "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"gateway_concurrency_limit\",\"message\":\"Concurrency limit exceeded for user, please retry later\"}}}\n\n",
+			wantType:   "rate_limit_error",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name:       "responses gateway queue full",
+			body:       "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"gateway_queue_full\",\"message\":\"Queue is full, please retry later\"}}}\n\n",
+			wantType:   "rate_limit_error",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
 			name:       "unknown terminal",
 			body:       "event: response.failed\ndata: {\"type\":\"response.failed\",\"error\":{\"code\":\"new_provider_code\",\"message\":\"failed\"}}\n\n",
 			wantType:   "upstream_error",

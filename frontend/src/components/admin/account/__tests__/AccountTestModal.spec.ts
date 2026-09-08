@@ -7,6 +7,10 @@ const { getAvailableModels, copyToClipboard } = vi.hoisted(() => ({
   copyToClipboard: vi.fn()
 }))
 
+type TestModalVm = {
+  selectedModelId: string
+}
+
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
@@ -112,11 +116,50 @@ describe('AccountTestModal', () => {
         'data: {"type":"image","image_url":"data:image/png;base64,QUJD","mime_type":"image/png"}\n',
         'data: {"type":"test_complete","success":true}\n'
       ])
-    ) as any
+    ) as unknown as typeof fetch
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('在测试前后分别显示测试模型和上游实际模型', async () => {
+    const wrapper = mountModal()
+    await wrapper.setProps({ show: true })
+    await flushPromises()
+    const modalVm = wrapper.vm as unknown as TestModalVm
+
+    modalVm.selectedModelId = 'requested-test-model'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.text()).toContain('admin.accounts.testModel')
+    expect(wrapper.text()).toContain('requested-test-model')
+    expect(wrapper.text()).not.toContain('admin.accounts.actualModel')
+
+    global.fetch = vi.fn().mockResolvedValue(
+      createStreamResponse([
+        'data: {"type":"test_start","model":"mapped-requested-test-model"}\n',
+        'data: {"type":"test_complete","success":true,"model":"provider-reported-model"}\n'
+      ])
+    ) as unknown as typeof fetch
+
+    const buttons = wrapper.findAll('button')
+    const startButton = buttons.find((button) => button.text().includes('admin.accounts.startTest'))
+    expect(startButton).toBeTruthy()
+    if (!startButton) {
+      throw new Error('start test button not found')
+    }
+    await startButton.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('mapped-requested-test-model')
+    expect(wrapper.text()).toContain('admin.accounts.actualModel')
+    expect(wrapper.text()).toContain('provider-reported-model')
+
+    const modelInfo = wrapper.find('.flex.flex-wrap.items-center.justify-between')
+    expect(modelInfo.classes()).toContain('gap-y-1')
+    expect(modelInfo.find('.truncate').exists()).toBe(true)
   })
 
   it('gemini 图片模型测试会携带提示词并渲染图片预览', async () => {
