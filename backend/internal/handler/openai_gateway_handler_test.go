@@ -1957,8 +1957,10 @@ type openAIResponsesWSUsageLogCase struct {
 	group *service.Group
 	// firstFrameCloseExpected：首帧即被拒（连接被 1008 关闭），不期待任何响应帧。
 	firstFrameCloseExpected bool
+	firstFrameCloseReason   string
 	// secondTurnCloseExpected：第二个 turn 被拒（连接被 1008 关闭）。
 	secondTurnCloseExpected bool
+	secondTurnCloseReason   string
 }
 
 type openAIResponsesWSUsageLogResult struct {
@@ -3077,7 +3079,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		var closeErr coderws.CloseError
 		require.ErrorAs(t, readErr, &closeErr)
 		require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
-		require.Contains(t, closeErr.Reason, "not available for this group")
+		expectedReason := tc.firstFrameCloseReason
+		if expectedReason == "" {
+			expectedReason = "not available for this group"
+		}
+		require.Contains(t, closeErr.Reason, expectedReason)
 		_ = clientConn.CloseNow()
 		return openAIResponsesWSUsageLogResult{}
 	}
@@ -3112,7 +3118,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 			var closeErr coderws.CloseError
 			require.ErrorAs(t, readErr, &closeErr)
 			require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
-			require.Contains(t, closeErr.Reason, "not available for this group")
+			expectedReason := tc.secondTurnCloseReason
+			if expectedReason == "" {
+				expectedReason = "not available for this group"
+			}
+			require.Contains(t, closeErr.Reason, expectedReason)
 			_ = clientConn.CloseNow()
 			return openAIResponsesWSUsageLogResult{}
 		}

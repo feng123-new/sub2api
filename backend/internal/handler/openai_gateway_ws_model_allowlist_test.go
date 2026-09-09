@@ -107,6 +107,7 @@ func TestOpenAIResponsesWebSocket_FirstFrameDuplicateModelKeysRejected(t *testin
 				group:                   wsAllowlistGroup(true, "gpt-5.4"),
 				ingressMode:             mode,
 				firstFrameCloseExpected: true,
+				firstFrameCloseReason:   "invalid websocket request payload",
 			})
 		})
 	}
@@ -134,21 +135,19 @@ func TestOpenAIResponsesWebSocket_SubsequentTurnDuplicateModelKeysRejected(t *te
 				group:                   wsAllowlistGroup(true, "gpt-5.4"),
 				ingressMode:             mode,
 				secondTurnCloseExpected: true,
+				secondTurnCloseReason:   "invalid websocket request payload",
 			})
 		})
 	}
 }
 
-// 重复但同值的 model 键不误伤，连接正常完成两个 turn。
-func TestOpenAIResponsesWebSocket_DuplicateIdenticalModelKeysAllowed(t *testing.T) {
-	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
-		firstPayload:  `{"type":"response.create","model":"gpt-5.4","model":"gpt-5.4","stream":false}`,
-		secondPayload: `{"type":"response.create","model":"gpt-5.4","stream":false}`,
-		group:         wsAllowlistGroup(true, "gpt-5.4"),
+func TestOpenAIResponsesWebSocket_DuplicateIdenticalModelKeysRejected(t *testing.T) {
+	runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:            `{"type":"response.create","model":"gpt-5.4","model":"gpt-5.4","stream":false}`,
+		group:                   wsAllowlistGroup(true, "gpt-5.4"),
+		firstFrameCloseExpected: true,
+		firstFrameCloseReason:   "invalid websocket request payload",
 	})
-	if len(got.clientEvents) != 2 {
-		t.Fatalf("expected two completed events, got %d", len(got.clientEvents))
-	}
 }
 
 // session.update 轮换绕过：首帧用白名单内模型建立会话，session.update 把会话
