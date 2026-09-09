@@ -738,7 +738,9 @@ func (s *OpenAIGatewayService) forward(
 					markPatchSet("service_tier", OpenAIFastTierPriority)
 				}
 			default:
-				if normTier != rawTier {
+				if account != nil && account.IsOpenAIOAuthLike() && normTier == "auto" {
+					markPatchDelete("service_tier")
+				} else if normTier != rawTier {
 					markPatchSet("service_tier", normTier)
 				}
 			}

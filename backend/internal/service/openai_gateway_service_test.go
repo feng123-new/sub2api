@@ -589,6 +589,41 @@ func TestOpenAIGatewayService_BindHTTPResponseAccount(t *testing.T) {
 	require.False(t, owned)
 }
 
+type openAIResponseBindingContextProbeCache struct {
+	GatewayCache
+	setCalls    int
+	sawCanceled bool
+}
+
+func (c *openAIResponseBindingContextProbeCache) SetSessionAccountID(ctx context.Context, _ int64, _ string, _ int64, _ time.Duration) error {
+	c.setCalls++
+	if ctx.Err() != nil {
+		c.sawCanceled = true
+		return ctx.Err()
+	}
+	return nil
+}
+
+func TestOpenAIGatewayService_BindHTTPResponseAccountAfterRequestCanceled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	groupID := int64(4201)
+	c.Set("api_key", &APIKey{ID: 501, GroupID: &groupID})
+	SetOpenAIHTTPResponseOwner(c, 601, 501)
+
+	cache := &openAIResponseBindingContextProbeCache{}
+	svc := &OpenAIGatewayService{cache: cache}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	svc.bindHTTPResponseAccount(ctx, c, &Account{ID: 37001}, "resp_http_canceled")
+
+	require.False(t, cache.sawCanceled)
+	require.Equal(t, 3, cache.setCalls)
+}
+
 func TestOpenAIGatewayService_GenerateExplicitSessionHash_SkipsContentFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &OpenAIGatewayService{}

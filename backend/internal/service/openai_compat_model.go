@@ -6,10 +6,18 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 )
 
+const (
+	openAILunaReserveModel = "gpt-reserve"
+	openAILunaModel        = "gpt-5.6-luna"
+)
+
 func NormalizeOpenAICompatRequestedModel(model string) string {
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
 		return ""
+	}
+	if strings.EqualFold(trimmed, openAILunaReserveModel) {
+		return openAILunaModel
 	}
 
 	normalized, _, ok := splitOpenAICompatReasoningModel(trimmed)

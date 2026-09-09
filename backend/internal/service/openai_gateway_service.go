@@ -610,10 +610,18 @@ func (s *OpenAIGatewayService) IsModelRestricted(ctx context.Context, groupID in
 // ResolveChannelMappingAndRestrict 解析渠道映射。
 // 模型限制检查已移至调度阶段，restricted 始终返回 false。
 func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Context, groupID *int64, model string) (ChannelMappingResult, bool) {
-	if s.channelService == nil {
-		return ChannelMappingResult{MappedModel: model}, false
+	routingModel := model
+	if strings.EqualFold(strings.TrimSpace(model), openAILunaReserveModel) {
+		routingModel = NormalizeOpenAICompatRequestedModel(model)
 	}
-	return s.channelService.ResolveChannelMappingAndRestrict(ctx, groupID, model)
+	if s.channelService == nil {
+		return ChannelMappingResult{MappedModel: routingModel, Mapped: routingModel != model}, false
+	}
+	mapping, restricted := s.channelService.ResolveChannelMappingAndRestrict(ctx, groupID, routingModel)
+	if !mapping.Mapped && routingModel != model {
+		mapping.Mapped = true
+	}
+	return mapping, restricted
 }
 
 func (s *OpenAIGatewayService) isCodexImageGenerationBridgeEnabled(ctx context.Context, account *Account, apiKey *APIKey) bool {

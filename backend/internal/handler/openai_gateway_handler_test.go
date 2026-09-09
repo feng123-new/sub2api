@@ -1559,6 +1559,31 @@ func TestOpenAIResponsesWebSocket_ChannelMappedTargetSelectsAccountWithoutReques
 	}
 }
 
+func TestOpenAIResponsesWebSocket_ReserveRoutesAsLunaAndPreservesRequestedModel(t *testing.T) {
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:  `{"type":"response.create","model":"gpt-reserve","stream":false}`,
+		secondPayload: `{"type":"response.create","stream":false}`,
+		accountModelMapping: map[string]any{
+			"gpt-5.6-luna": "gpt-5.6-luna",
+		},
+	})
+
+	require.Len(t, got.upstreamPayloads, 2)
+	require.Equal(t, "gpt-5.6-luna", gjson.GetBytes(got.upstreamPayloads[0], "model").String())
+	require.Equal(t, "gpt-5.6-luna", gjson.GetBytes(got.upstreamPayloads[1], "model").String())
+	require.Len(t, got.clientEvents, 2)
+	require.Equal(t, "gpt-reserve", gjson.GetBytes(got.clientEvents[0], "response.model").String())
+	require.Equal(t, "gpt-reserve", gjson.GetBytes(got.clientEvents[1], "response.model").String())
+	require.Len(t, got.logs, 2)
+	for _, usageLog := range got.logs {
+		require.Equal(t, "gpt-reserve", usageLog.RequestedModel)
+		require.NotNil(t, usageLog.UpstreamModel)
+		require.Equal(t, "gpt-5.6-luna", *usageLog.UpstreamModel)
+		require.NotNil(t, usageLog.ModelMappingChain)
+		require.Equal(t, "gpt-reserve→gpt-5.6-luna", *usageLog.ModelMappingChain)
+	}
+}
+
 func TestOpenAIResponsesWebSocket_PassthroughKeepsTurnMappingSnapshot(t *testing.T) {
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:  `{"type":"response.create","model":"sol","stream":false}`,
