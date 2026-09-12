@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Sub2API monitor every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+RandomizedDelaySec=10s
+Persistent=true
+Unit=sub2api-monitor.service
+
+[Install]
+WantedBy=timers.target

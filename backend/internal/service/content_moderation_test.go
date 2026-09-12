@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1924,4 +1925,97 @@ func TestContentModerationUpdateConfig_CyberPolicyExcludeFromBanCount(t *testing
 	})
 	require.NoError(t, err)
 	require.False(t, view.CyberPolicyExcludeFromBanCount)
+}
+
+func contentModerationHardeningConfig(t *testing.T, baseURL string, keys []string) string {
+	t.Helper()
+	cfg := &ContentModerationConfig{
+		Enabled:      true,
+		Mode:         ContentModerationModePreBlock,
+		BaseURL:      baseURL,
+		Model:        "omni-moderation-latest",
+		APIKeys:      keys,
+		TimeoutMS:    1000,
+		SampleRate:   100,
+		AllGroups:    true,
+		BlockStatus:  http.StatusForbidden,
+		BlockMessage: "blocked",
+		RetryCount:   0,
+	}
+	raw, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func contentModerationHardeningInput() ContentModerationCheckInput {
+	return ContentModerationCheckInput{
+		UserID:   7,
+		APIKeyID: 9,
+		Endpoint: "/v1/chat/completions",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Model:    "gpt-test",
+		Body:     []byte("{\"messages\":[{\"role\":\"user\",\"content\":\"repeat me\"}] }"),
+	}
+}
+
+func TestContentModerationCheck_FailsClosedWhenNoAuditAPIKeys(t *testing.T) {
+	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{
+		SettingKeyRiskControlEnabled:      "true",
+		SettingKeyContentModerationConfig: contentModerationHardeningConfig(t, "http://moderation.invalid", nil),
+	}}
+	svc := NewContentModerationService(settingRepo, &contentModerationTestRepo{}, nil, nil, nil, nil, nil, nil)
+
+	decision, err := svc.Check(context.Background(), contentModerationHardeningInput())
+	require.NoError(t, err)
+	require.False(t, decision.Allowed)
+	require.True(t, decision.Blocked)
+	require.Equal(t, http.StatusServiceUnavailable, decision.StatusCode)
+	require.Equal(t, ContentModerationActionError, decision.Action)
+}
+
+func TestContentModerationCheck_FailsClosedWhenAuditAPIRejects(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("{\"error\":\"rate limited\"}"))
+	}))
+	defer server.Close()
+	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{
+		SettingKeyRiskControlEnabled:      "true",
+		SettingKeyContentModerationConfig: contentModerationHardeningConfig(t, server.URL, []string{"sk-test"}),
+	}}
+	svc := NewContentModerationService(settingRepo, &contentModerationTestRepo{}, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = server.Client()
+
+	decision, err := svc.Check(context.Background(), contentModerationHardeningInput())
+	require.NoError(t, err)
+	require.False(t, decision.Allowed)
+	require.True(t, decision.Blocked)
+	require.Equal(t, http.StatusServiceUnavailable, decision.StatusCode)
+	require.Equal(t, int32(1), calls.Load())
+}
+
+func TestContentModerationCheck_DeduplicatesSuccessfulDecision(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{\"results\":[{\"flagged\":false,\"category_scores\":{}}]}"))
+	}))
+	defer server.Close()
+	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{
+		SettingKeyRiskControlEnabled:      "true",
+		SettingKeyContentModerationConfig: contentModerationHardeningConfig(t, server.URL, []string{"sk-test"}),
+	}}
+	svc := NewContentModerationService(settingRepo, &contentModerationTestRepo{}, nil, nil, nil, nil, nil, nil)
+	svc.httpClient = server.Client()
+
+	first, err := svc.Check(context.Background(), contentModerationHardeningInput())
+	require.NoError(t, err)
+	second, err := svc.Check(context.Background(), contentModerationHardeningInput())
+	require.NoError(t, err)
+	require.True(t, first.Allowed)
+	require.True(t, second.Allowed)
+	require.Equal(t, int32(1), calls.Load())
 }

@@ -1,0 +1,10 @@
+[Unit]
+Description=Probe Sub2API moderation API key rate limits
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/sub2api-deploy/ops/check-moderation-keys.sh
+StandardOutput=journal
+StandardError=journal

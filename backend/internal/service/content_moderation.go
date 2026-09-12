@@ -26,6 +26,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -74,6 +75,10 @@ const (
 	defaultContentModerationViolationWindowHours = 720
 	defaultContentModerationBlockHTTPStatus      = http.StatusForbidden
 	defaultContentModerationBlockMessage         = "内容审计命中风险规则，请调整输入后重试"
+	defaultContentModerationFailureMessage       = "内容审查服务暂时不可用，请稍后重试"
+	defaultContentModerationFailureStatus        = http.StatusServiceUnavailable
+	contentModerationDecisionCacheTTL            = 30 * time.Second
+	contentModerationDecisionCacheMaxEntries     = 8192
 	defaultContentModerationRetryCount           = 2
 	maxContentModerationRetryCount               = 5
 	defaultContentModerationHitRetentionDays     = 180
@@ -455,6 +460,8 @@ type ContentModerationRuntimeStatus struct {
 	PreBlockBlocked              int64                           `json:"pre_block_blocked"`
 	PreBlockErrors               int64                           `json:"pre_block_errors"`
 	PreBlockAvgLatencyMS         int64                           `json:"pre_block_avg_latency_ms"`
+	PreBlockCacheHits            int64                           `json:"pre_block_cache_hits"`
+	PreBlockCacheStores          int64                           `json:"pre_block_cache_stores"`
 	PreBlockAPIKeyActive         int64                           `json:"pre_block_api_key_active"`
 	PreBlockAPIKeyAvailableCount int64                           `json:"pre_block_api_key_available_count"`
 	PreBlockAPIKeyTotalCalls     int64                           `json:"pre_block_api_key_total_calls"`
@@ -499,6 +506,16 @@ type ContentModerationHashCache interface {
 	CountFlaggedInputHashes(ctx context.Context) (int64, error)
 }
 
+type contentModerationDecisionCacheEntry struct {
+	decision  *ContentModerationDecision
+	expiresAt time.Time
+}
+
+type contentModerationDecisionCacheResult struct {
+	decision *ContentModerationDecision
+	cacheHit bool
+}
+
 type ContentModerationService struct {
 	settingRepo              SettingRepository
 	repo                     ContentModerationRepository
@@ -533,6 +550,11 @@ type ContentModerationService struct {
 	runtimeRefreshRetryAt    atomic.Int64
 	keyHealthMu              sync.Mutex
 	keyHealth                map[string]*contentModerationKeyHealth
+	decisionCacheMu          sync.Mutex
+	decisionCache            map[string]contentModerationDecisionCacheEntry
+	decisionCacheFlight      singleflight.Group
+	preBlockCacheHits        atomic.Int64
+	preBlockCacheStores      atomic.Int64
 }
 
 type contentModerationRuntimeSnapshot struct {
@@ -595,6 +617,7 @@ func NewContentModerationService(
 		workerCount:          maxContentModerationWorkerCount,
 		asyncQueue:           make(chan contentModerationTask, maxContentModerationQueueSize),
 		keyHealth:            make(map[string]*contentModerationKeyHealth),
+		decisionCache:        make(map[string]contentModerationDecisionCacheEntry),
 	}
 	if settingRepo != nil && repo != nil {
 		for i := 0; i < svc.workerCount; i++ {
@@ -817,13 +840,13 @@ func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestCo
 func (s *ContentModerationService) Check(ctx context.Context, input ContentModerationCheckInput) (*ContentModerationDecision, error) {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 	if s == nil || s.settingRepo == nil || s.repo == nil {
-		slog.Info("content_moderation.skip_unavailable",
+		slog.Warn("content_moderation.fail_closed_unavailable",
 			"user_id", input.UserID,
 			"api_key_id", input.APIKeyID,
 			"group_id", contentModerationLogGroupID(input.GroupID),
 			"endpoint", input.Endpoint,
 			"protocol", input.Protocol)
-		return allow, nil
+		return (&ContentModerationService{}).contentModerationFailureDecision(nil, ""), nil
 	}
 	runtimeSnapshot, err := s.loadRuntimeSnapshot(ctx)
 	if err != nil {
@@ -834,7 +857,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"endpoint", input.Endpoint,
 			"protocol", input.Protocol,
 			"error", err)
-		return allow, nil
+		return s.contentModerationFailureDecision(nil, ""), nil
 	}
 	if !runtimeSnapshot.riskControlEnabled {
 		slog.Info("content_moderation.skip_feature_disabled",
@@ -1030,6 +1053,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"group_id", contentModerationLogGroupID(input.GroupID),
 			"endpoint", input.Endpoint,
 			"protocol", input.Protocol)
+		if cfg.Mode == ContentModerationModePreBlock {
+			return s.contentModerationFailureDecision(cfg, ""), nil
+		}
 		return allow, nil
 	}
 	if cfg.Mode == ContentModerationModeObserve {
@@ -1044,10 +1070,49 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		return allow, nil
 	}
 
-	return s.checkSync(ctx, input, cfg, content, hashText, nil, true), nil
+	return s.checkSyncWithDigest(ctx, input, cfg, content, hashText, nil, true, runtimeSnapshot.configDigest), nil
 }
 
 func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
+	return s.checkSyncWithDigest(ctx, input, cfg, content, hashText, queueDelay, allowBlock, [sha256.Size]byte{})
+}
+
+func (s *ContentModerationService) checkSyncWithDigest(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool, configDigest [sha256.Size]byte) *ContentModerationDecision {
+	cacheEnabled := queueDelay == nil && allowBlock && cfg != nil && cfg.Mode == ContentModerationModePreBlock && hashText != "" && configDigest != ([sha256.Size]byte{})
+	if !cacheEnabled {
+		return s.checkSyncUncached(ctx, input, cfg, content, hashText, queueDelay, allowBlock)
+	}
+	cacheKey := fmt.Sprintf("%x:%s", configDigest, hashText)
+	value, _, _ := s.decisionCacheFlight.Do(cacheKey, func() (any, error) {
+		if decision, ok := s.getCachedDecision(cacheKey); ok {
+			return contentModerationDecisionCacheResult{decision: decision, cacheHit: true}, nil
+		}
+		decision := s.checkSyncUncached(ctx, input, cfg, content, hashText, queueDelay, allowBlock)
+		if decision != nil && decision.Allowed && !decision.Flagged && decision.Action == ContentModerationActionAllow {
+			s.storeCachedDecision(cacheKey, decision)
+		}
+		return contentModerationDecisionCacheResult{decision: decision}, nil
+	})
+	result, ok := value.(contentModerationDecisionCacheResult)
+	if !ok || result.decision == nil {
+		return s.contentModerationFailureDecision(cfg, hashText)
+	}
+	if result.cacheHit {
+		s.preBlockCacheHits.Add(1)
+		s.recordPreBlockSyncMetric(0, result.decision.Action)
+		slog.Info("content_moderation.cache_hit",
+			"user_id", input.UserID,
+			"api_key_id", input.APIKeyID,
+			"group_id", contentModerationLogGroupID(input.GroupID),
+			"endpoint", input.Endpoint,
+			"protocol", input.Protocol,
+			"input_hash", hashText,
+			"ttl_seconds", int(contentModerationDecisionCacheTTL/time.Second))
+	}
+	return cloneContentModerationDecision(result.decision)
+}
+
+func (s *ContentModerationService) checkSyncUncached(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
 	allow := &ContentModerationDecision{Allowed: true, Action: ContentModerationActionAllow}
 	trackPreBlock := queueDelay == nil && allowBlock && cfg != nil && cfg.Mode == ContentModerationModePreBlock
 	if trackPreBlock {
@@ -1078,6 +1143,9 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		if cfg.RecordNonHits {
 			log := s.buildLog(input, cfg, ContentModerationActionError, false, "", 0, nil, content.ExcerptText(), &latency, queueDelay, err.Error())
 			_ = s.repo.CreateLog(ctx, log)
+		}
+		if allowBlock && cfg.Mode == ContentModerationModePreBlock {
+			return s.contentModerationFailureDecision(cfg, hashText)
 		}
 		return allow
 	}
@@ -1138,6 +1206,76 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		CategoryScores:  result.CategoryScores,
 		Action:          action,
 	}
+}
+
+func (s *ContentModerationService) contentModerationFailureDecision(cfg *ContentModerationConfig, inputHash string) *ContentModerationDecision {
+	return &ContentModerationDecision{
+		Allowed:    false,
+		Blocked:    true,
+		InputHash:  inputHash,
+		Message:    defaultContentModerationFailureMessage,
+		StatusCode: defaultContentModerationFailureStatus,
+		Action:     ContentModerationActionError,
+	}
+}
+
+func cloneContentModerationDecision(in *ContentModerationDecision) *ContentModerationDecision {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.CategoryScores != nil {
+		out.CategoryScores = make(map[string]float64, len(in.CategoryScores))
+		for key, value := range in.CategoryScores {
+			out.CategoryScores[key] = value
+		}
+	}
+	return &out
+}
+
+func (s *ContentModerationService) getCachedDecision(key string) (*ContentModerationDecision, bool) {
+	if s == nil {
+		return nil, false
+	}
+	now := time.Now()
+	s.decisionCacheMu.Lock()
+	defer s.decisionCacheMu.Unlock()
+	entry, ok := s.decisionCache[key]
+	if !ok {
+		return nil, false
+	}
+	if !entry.expiresAt.After(now) {
+		delete(s.decisionCache, key)
+		return nil, false
+	}
+	return cloneContentModerationDecision(entry.decision), true
+}
+
+func (s *ContentModerationService) storeCachedDecision(key string, decision *ContentModerationDecision) {
+	if s == nil || decision == nil {
+		return
+	}
+	s.decisionCacheMu.Lock()
+	defer s.decisionCacheMu.Unlock()
+	if len(s.decisionCache) >= contentModerationDecisionCacheMaxEntries {
+		now := time.Now()
+		for existingKey, entry := range s.decisionCache {
+			if !entry.expiresAt.After(now) {
+				delete(s.decisionCache, existingKey)
+			}
+		}
+		if len(s.decisionCache) >= contentModerationDecisionCacheMaxEntries {
+			for existingKey := range s.decisionCache {
+				delete(s.decisionCache, existingKey)
+				break
+			}
+		}
+	}
+	s.decisionCache[key] = contentModerationDecisionCacheEntry{
+		decision:  cloneContentModerationDecision(decision),
+		expiresAt: time.Now().Add(contentModerationDecisionCacheTTL),
+	}
+	s.preBlockCacheStores.Add(1)
 }
 
 func (s *ContentModerationService) recordPreBlockSyncMetric(latencyMS int, action string) {
@@ -1439,6 +1577,8 @@ func (s *ContentModerationService) GetStatus(ctx context.Context) (*ContentModer
 		PreBlockBlocked:              s.preBlockBlocked.Load(),
 		PreBlockErrors:               s.preBlockErrors.Load(),
 		PreBlockAvgLatencyMS:         preBlockAvgLatency,
+		PreBlockCacheHits:            s.preBlockCacheHits.Load(),
+		PreBlockCacheStores:          s.preBlockCacheStores.Load(),
 		PreBlockAPIKeyActive:         s.preBlockAPIKeyActive(cfg.apiKeys()),
 		PreBlockAPIKeyAvailableCount: s.preBlockAPIKeyAvailableCount(cfg.apiKeys()),
 		PreBlockAPIKeyTotalCalls:     s.preBlockAPIKeyTotalCalls(cfg.apiKeys()),

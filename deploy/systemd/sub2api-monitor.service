@@ -1,0 +1,10 @@
+[Unit]
+Description=Sub2API one-minute health and moderation guardrail monitor
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/sub2api-deploy/ops/monitor-sub2api.sh
+StandardOutput=journal
+StandardError=journal
