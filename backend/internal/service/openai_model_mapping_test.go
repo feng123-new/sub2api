@@ -469,6 +469,9 @@ func TestUsageBillingModelCandidatesPreserveGPT55ProModel(t *testing.T) {
 }
 
 func TestResolveOpenAIOAuthKnownUnsupportedCodexFallback(t *testing.T) {
+	newOpenAIOAuthAccountForModelTest := func() *Account {
+		return &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	}
 	tests := []struct {
 		name           string
 		account        *Account
