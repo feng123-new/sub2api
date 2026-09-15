@@ -151,9 +151,12 @@ func TestAccount24IdentityRelationsFinalRequestBuilders(t *testing.T) {
 		require.NoError(t, err)
 		var decoded map[string]any
 		require.NoError(t, json.Unmarshal(out, &decoded))
-		cm := decoded["client_metadata"].(map[string]any)
+		cm, ok := decoded["client_metadata"].(map[string]any)
+		require.True(t, ok)
 		require.Equal(t, cm["session_id"], cm["thread_id"])
-		require.Equal(t, cm["thread_id"].(string)+":3", cm["x-codex-window-id"])
+		mappedThread, ok := cm["thread_id"].(string)
+		require.True(t, ok)
+		require.Equal(t, mappedThread+":3", cm["x-codex-window-id"])
 		require.Equal(t, cm["x-codex-window-id"], request.Header.Get("x-codex-window-id"))
 		require.Equal(t, cm["x-codex-installation-id"], request.Header.Get("x-codex-installation-id"))
 		var headerMetadata map[string]any

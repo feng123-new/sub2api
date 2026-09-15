@@ -17,7 +17,9 @@ func TestCodexIdentityRolloutAccounts(t *testing.T) {
 			values := map[string]any{"session_id": root, "thread_id": root, "window_id": root + ":4", "parent_thread_id": root, "turn_id": "turn", "root_turn_id": "turn"}
 			require.True(t, applyCodexAccountIdentityFields(values, a, 1))
 			require.Equal(t, values["session_id"], values["thread_id"])
-			require.Equal(t, values["thread_id"].(string)+":4", values["window_id"])
+			mappedThread, ok := values["thread_id"].(string)
+			require.True(t, ok)
+			require.Equal(t, mappedThread+":4", values["window_id"])
 			require.Equal(t, values["thread_id"], values["parent_thread_id"])
 			require.Equal(t, values["turn_id"], values["root_turn_id"])
 			require.NotEqual(t, values["session_id"], scopeCodexAccountIdentityValue(a, 2, "session", root))
