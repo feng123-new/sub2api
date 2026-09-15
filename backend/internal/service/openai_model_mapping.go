@@ -18,6 +18,11 @@ func resolveOpenAIForwardModel(account *Account, requestedModel, messagesDispatc
 	if !matched && messagesDispatchMappedModel != "" {
 		return messagesDispatchMappedModel
 	}
+	if !matched {
+		if fallbackModel, ok := resolveOpenAIOAuthKnownUnsupportedCodexFallbackModel(account, requestedModel); ok {
+			return fallbackModel
+		}
+	}
 	return mappedModel
 }
 
@@ -56,6 +61,28 @@ var openAIOAuthForeignModelPrefixes = []string{
 	"step-",
 	"seed-",
 	"yi-",
+}
+
+const openAIOAuthKnownUnsupportedCodexFallbackModel = "gpt-5.6-luna"
+
+// resolveOpenAIOAuthKnownUnsupportedCodexFallbackModel maps the currently
+// unsupported ChatGPT/Codex targets to a model present in the live manifest.
+// The rule is intentionally exact enough to avoid rewriting unrelated aliases.
+func resolveOpenAIOAuthKnownUnsupportedCodexFallbackModel(account *Account, requestedModel string) (string, bool) {
+	if account == nil || !account.IsOpenAIOAuthLike() {
+		return "", false
+	}
+	target := strings.TrimSpace(requestedModel)
+	if account.IsOpenAIPassthroughEnabled() {
+		return "", false
+	}
+	target = strings.ToLower(strings.TrimSpace(lastOpenAIModelSegment(target)))
+	switch {
+	case target == "gpt-5.4", target == "gpt-5.4-mini", strings.HasPrefix(target, "gpt-5.4-"):
+		return openAIOAuthKnownUnsupportedCodexFallbackModel, true
+	default:
+		return "", false
+	}
 }
 
 // isOpenAIOAuthServableModel 判断「空 model_mapping 的 OpenAI OAuth 账号」能否

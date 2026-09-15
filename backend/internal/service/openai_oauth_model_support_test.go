@@ -21,8 +21,6 @@ func TestIsModelSupported_OpenAIOAuthEmptyMapping_ServableModels(t *testing.T) {
 
 	servable := []string{
 		"", // 空模型交由上层必填校验
-		"gpt-5.4",
-		"gpt-5.4-high", // 推理后缀变体
 		"gpt-5.3-codex",
 		"gpt-5.1-codex-mini",
 		"gpt-5",
@@ -69,8 +67,8 @@ func TestIsModelSupported_OpenAIOAuthExplicitMappingUnchanged(t *testing.T) {
 	account := newOpenAIOAuthAccountForModelTest()
 	account.Credentials = map[string]any{
 		"model_mapping": map[string]any{
-			"deepseek-v4": "gpt-5.4",
-			"k3":          "gpt-5.4", // 显式映射优先：bare k3 仍可被账号声明支持
+			"deepseek-v4": "gpt-5.6-luna",
+			"k3":          "gpt-5.6-luna", // 显式映射优先：bare k3 仍可被账号声明支持
 		},
 	}
 
