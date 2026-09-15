@@ -467,3 +467,68 @@ func TestUsageBillingModelCandidatesPreserveGPT55ProModel(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveOpenAIOAuthKnownUnsupportedCodexFallback(t *testing.T) {
+	newOpenAIOAuthAccountForModelTest := func() *Account {
+		return &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	}
+	tests := []struct {
+		name           string
+		account        *Account
+		requestedModel string
+		messagesModel  string
+		expectedModel  string
+	}{
+		{
+			name:           "empty mapping falls back to advertised luna model",
+			account:        newOpenAIOAuthAccountForModelTest(),
+			requestedModel: "gpt-5.4",
+			expectedModel:  "gpt-5.6-luna",
+		},
+		{
+			name: "explicit self mapping remains authoritative",
+			account: func() *Account {
+				account := newOpenAIOAuthAccountForModelTest()
+				account.Credentials = map[string]any{
+					"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"},
+				}
+				return account
+			}(),
+			requestedModel: "gpt-5.4",
+			expectedModel:  "gpt-5.4",
+		},
+		{
+			name: "explicit mapping remains authoritative",
+			account: func() *Account {
+				account := newOpenAIOAuthAccountForModelTest()
+				account.Credentials = map[string]any{
+					"model_mapping": map[string]any{"gpt-5.4": "gpt-5.6-sol"},
+				}
+				return account
+			}(),
+			requestedModel: "gpt-5.4",
+			expectedModel:  "gpt-5.6-sol",
+		},
+		{
+			name: "passthrough keeps requested model",
+			account: &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+				Extra: map[string]any{"openai_passthrough": true}},
+			requestedModel: "gpt-5.4",
+			expectedModel:  "gpt-5.4",
+		},
+		{
+			name:           "api key account keeps requested model",
+			account:        &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+			requestedModel: "gpt-5.4",
+			expectedModel:  "gpt-5.4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveOpenAIForwardModel(tt.account, tt.requestedModel, tt.messagesModel); got != tt.expectedModel {
+				t.Fatalf("resolveOpenAIForwardModel(...) = %q, want %q", got, tt.expectedModel)
+			}
+		})
+	}
+}

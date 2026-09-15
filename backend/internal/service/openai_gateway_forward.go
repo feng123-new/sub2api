@@ -1499,7 +1499,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	// Whitelist passthrough headers
 	for key, values := range c.Request.Header {
 		lowerKey := strings.ToLower(key)
-		if openaiAllowedHeaders[lowerKey] {
+		if openaiAllowedHeaders[lowerKey] || (account.Type == AccountTypeOAuth && lowerKey == "x-timezone") {
 			for _, v := range values {
 				req.Header.Add(key, v)
 			}

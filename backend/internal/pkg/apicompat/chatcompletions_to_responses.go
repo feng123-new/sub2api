@@ -289,11 +289,15 @@ func chatToolToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	if output == "" {
 		output = "(empty)"
 	}
-	return []ResponsesInputItem{{
+	item := ResponsesInputItem{
 		Type:   "function_call_output",
 		CallID: m.ToolCallID,
 		Output: output,
-	}}, nil
+	}
+	if item.CallID == "" {
+		item.Name = m.Name
+	}
+	return []ResponsesInputItem{item}, nil
 }
 
 // chatFunctionToResponses converts a legacy function result message

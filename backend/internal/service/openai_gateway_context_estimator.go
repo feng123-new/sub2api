@@ -386,7 +386,8 @@ func isSupportedOpenAIResponsesTopLevelField(key string) bool {
 		"parallel_tool_calls", "reasoning", "safety_identifier", "service_tier", "store",
 		"stream", "stream_options", "temperature", "top_logprobs", "top_p", "truncation",
 		"user", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options",
-		"type", "client_metadata", "generate":
+		"previous_response_id", "conversation", "modalities", "audio", "response_format",
+		"verbosity", "type", "client_metadata", "generate":
 		return true
 	default:
 		return false
@@ -442,11 +443,48 @@ func countCompleteOpenAIResponsesInput(counter *openAICompleteTokenCounter, raw 
 			if err := countCompleteOpenAIResponsesAdditionalTools(counter, itemRaw, item); err != nil {
 				return err
 			}
+		case "input_text", "output_text", "refusal", "summary_text":
+			if err := countCompleteOpenAIResponsesTextItem(counter, itemRaw, item); err != nil {
+				return err
+			}
+		case "computer_call", "computer_call_output", "custom_tool_call", "custom_tool_call_output",
+			"file_search_call", "file_search_call_output", "image_generation_call", "item_reference",
+			"local_shell_call", "local_shell_call_output", "mcp_approval_request", "mcp_approval_response",
+			"mcp_call", "mcp_list_tools", "reasoning", "compaction", "web_search_call",
+			"web_search_call_output":
+			if err := countCompleteOpenAIResponsesOpaqueItem(counter, itemRaw, item); err != nil {
+				return err
+			}
 		default:
 			return errOpenAIInputTokensUnsupportedShape
 		}
 	}
 	return nil
+}
+
+func countCompleteOpenAIResponsesTextItem(counter *openAICompleteTokenCounter, raw json.RawMessage, item map[string]json.RawMessage) error {
+	if !openAIJSONFieldsAllowed(item, "type", "text", "id", "status") {
+		return errOpenAIInputTokensUnsupportedShape
+	}
+	text, ok, err := counter.decodeJSONString(item["text"])
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errOpenAIInputTokensUnsupportedShape
+	}
+	counter.total += openAIResponsesContentPartOverhead
+	if len(item) > 2 {
+		return counter.addJSON(raw)
+	}
+	return counter.add(text)
+}
+
+func countCompleteOpenAIResponsesOpaqueItem(counter *openAICompleteTokenCounter, raw json.RawMessage, item map[string]json.RawMessage) error {
+	if !openAIJSONFieldsAllowed(item, "type", "id", "status", "call_id", "name", "input", "output", "action", "pending_safety_checks", "acknowledged_safety_checks", "arguments", "namespace", "role", "tools", "encrypted_content", "summary", "queries", "results", "server_label", "approval_request_id", "approval") {
+		return errOpenAIInputTokensUnsupportedShape
+	}
+	return counter.addJSON(raw)
 }
 
 func countCompleteOpenAIResponsesMessage(counter *openAICompleteTokenCounter, item map[string]json.RawMessage) error {
@@ -483,7 +521,7 @@ func countCompleteOpenAIResponsesMessage(counter *openAICompleteTokenCounter, it
 		}
 	}
 	if raw, exists := item["content"]; exists && !isOpenAIJSONNull(raw) {
-		return countCompleteOpenAITextContent(counter, raw, "input_text", "output_text", "text")
+		return countCompleteOpenAITextContent(counter, raw, "input_text", "output_text", "text", "refusal", "summary_text")
 	}
 	return nil
 }
@@ -564,7 +602,7 @@ func countCompleteOpenAIResponsesFunctionOutput(counter *openAICompleteTokenCoun
 			if err := counter.add(text); err != nil {
 				return err
 			}
-		} else if err := countCompleteOpenAITextContent(counter, output, "input_text", "output_text", "text"); err != nil {
+		} else if err := countCompleteOpenAITextContent(counter, output, "input_text", "output_text", "text", "refusal", "summary_text"); err != nil {
 			return err
 		}
 	}
@@ -663,7 +701,10 @@ func countCompleteOpenAITextContent(counter *openAICompleteTokenCounter, raw jso
 		if err != nil {
 			return err
 		}
-		if !ok || !openAIJSONFieldsAllowed(part, "type", "text") {
+		if !ok {
+			return errOpenAIInputTokensUnsupportedShape
+		}
+		if !openAIJSONFieldsAllowed(part, "type", "text", "id", "status") {
 			return errOpenAIInputTokensUnsupportedShape
 		}
 		partType, ok, err := counter.decodeJSONString(part["type"])
@@ -684,6 +725,9 @@ func countCompleteOpenAITextContent(counter *openAICompleteTokenCounter, raw jso
 			return errOpenAIInputTokensUnsupportedShape
 		}
 		counter.total += openAIResponsesContentPartOverhead
+		if len(part) > 2 {
+			return counter.addJSON(partRaw)
+		}
 		if err := counter.add(text); err != nil {
 			return err
 		}

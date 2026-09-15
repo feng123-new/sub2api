@@ -251,6 +251,9 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 }
 
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Account, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if _, hit := classifyOpenAIUpstreamPolicyRejection(statusCode, upstreamMsg, upstreamBody); hit {
+		return false
+	}
 	// cyber_policy is request-scoped even when an intermediary wraps the
 	// provider response in a retryable 5xx status. Never punish or rotate the
 	// selected credential for it.
@@ -521,6 +524,19 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(ctx, account, body)
 
+	if rejection, hit := classifyOpenAIUpstreamPolicyRejection(resp.StatusCode, "", body); hit && (account == nil || account.Platform != PlatformGrok) {
+		detail := truncateString(string(body), 2048)
+		recordOpenAIUpstreamPolicyRejection(c, account, rejection, resp.StatusCode, resp.Header.Get("x-request-id"), body, false, detail)
+		MarkResponseCommitted(c)
+		writeOpenAIPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		c.Data(rejection.ClientStatus, contentType, body)
+		return nil, fmt.Errorf("openai upstream policy rejection: %s", rejection.Reason)
+	}
+
 	// cyber_policy 硬阻断：透传上游原始错误体给客户端（不重包成通用 502），不冷却账号。
 	// 当前请求恒透传（需求1）；标记供 handler 事后写风控/邮件。400 cyber 不可 failover
 	// （shouldFailoverUpstreamError(400)=false），故走到此处即可安全早返回。
@@ -771,6 +787,18 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 ) (*OpenAIForwardResult, error) {
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(context.Background(), account, body)
+
+	if rejection, hit := classifyOpenAIUpstreamPolicyRejection(resp.StatusCode, "", body); hit && (account == nil || account.Platform != PlatformGrok) {
+		detail := truncateString(string(body), 2048)
+		recordOpenAIUpstreamPolicyRejection(c, account, rejection, resp.StatusCode, resp.Header.Get("x-request-id"), body, false, detail)
+		MarkResponseCommitted(c)
+		clientMsg := rejection.Message
+		if clientMsg == "" {
+			clientMsg = "Request blocked by upstream policy"
+		}
+		writeError(c, rejection.ClientStatus, "invalid_request_error", clientMsg)
+		return nil, fmt.Errorf("openai upstream policy rejection: %s", rejection.Reason)
+	}
 
 	// cyber_policy：兼容路径（Chat Completions / Anthropic）以各自格式回写错误，
 	// 不原样透传 responses 格式的 cyber body（否则对下游格式不合法）。cyber 是上游网络
