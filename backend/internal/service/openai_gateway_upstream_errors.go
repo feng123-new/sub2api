@@ -524,7 +524,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(ctx, account, body)
 
-	if rejection, hit := classifyOpenAIUpstreamPolicyRejection(resp.StatusCode, "", body); hit {
+	if rejection, hit := classifyOpenAIUpstreamPolicyRejection(resp.StatusCode, "", body); hit && (account == nil || account.Platform != PlatformGrok) {
 		detail := truncateString(string(body), 2048)
 		recordOpenAIUpstreamPolicyRejection(c, account, rejection, resp.StatusCode, resp.Header.Get("x-request-id"), body, false, detail)
 		MarkResponseCommitted(c)
@@ -788,7 +788,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 	body := s.readUpstreamErrorBody(resp)
 	body = s.redactAgentIdentitySensitiveBody(context.Background(), account, body)
 
-	if rejection, hit := classifyOpenAIUpstreamPolicyRejection(resp.StatusCode, "", body); hit {
+	if rejection, hit := classifyOpenAIUpstreamPolicyRejection(resp.StatusCode, "", body); hit && (account == nil || account.Platform != PlatformGrok) {
 		detail := truncateString(string(body), 2048)
 		recordOpenAIUpstreamPolicyRejection(c, account, rejection, resp.StatusCode, resp.Header.Get("x-request-id"), body, false, detail)
 		MarkResponseCommitted(c)
