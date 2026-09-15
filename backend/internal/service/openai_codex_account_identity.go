@@ -5,10 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -39,6 +42,12 @@ func codexAccountIdentitySource(c *gin.Context, fallback *Account) *Account {
 	if c != nil {
 		if staged, ok := c.Get(codexAccountIdentitySourceContextKey); ok {
 			if source, ok := staged.(*Account); ok && source != nil {
+				if fallback != nil && fallback.ID != source.ID && codexIdentityRelationsEnabled(source) {
+					copy := *source
+					copy.Extra = maps.Clone(source.Extra)
+					copy.Extra["codex_identity_relations_v1"] = false
+					return &copy
+				}
 				return source
 			}
 		}
@@ -90,11 +99,39 @@ func isolateOpenAIUpstreamSessionID(apiKeyID int64, account *Account, raw string
 	return fmt.Sprintf("%x", sum[:8])
 }
 
+func codexIdentityRelationsEnabled(account *Account) bool {
+	if account == nil || account.GetCodexFingerprintMode() != codexFingerprintDevice {
+		return false
+	}
+	switch account.ID {
+	case 17, 19, 22, 24, 156, 157, 160:
+		enabled, _ := account.Extra["codex_identity_relations_v1"].(bool)
+		return enabled
+	default:
+		return false
+	}
+}
+
 func scopeCodexAccountIdentityValue(account *Account, apiKeyID int64, kind, raw string) string {
 	raw = strings.TrimSpace(raw)
 	namespace := codexAccountIdentityNamespace(account)
 	if raw == "" || namespace == "" {
 		return raw
+	}
+	if codexIdentityRelationsEnabled(account) {
+		if kind == "thread" {
+			kind = "session"
+		}
+		if kind == "window" {
+			if split := strings.LastIndexByte(raw, ':'); split > 0 {
+				thread, number := raw[:split], raw[split+1:]
+				_, threadErr := uuid.Parse(thread)
+				_, numberErr := strconv.ParseUint(number, 10, 64)
+				if threadErr == nil && numberErr == nil {
+					return scopeCodexAccountIdentityValue(account, apiKeyID, "thread", thread) + ":" + number
+				}
+			}
+		}
 	}
 	return deriveStableUUIDv4(fmt.Sprintf(
 		"sub2api:codex-account-identity:%s:user:%d:account:%s:kind:%s:value:%s",
@@ -107,8 +144,9 @@ func scopeCodexAccountIdentityValue(account *Account, apiKeyID int64, kind, raw 
 }
 
 var codexAccountIdentityFields = []struct {
-	name string
-	kind string
+	name          string
+	kind          string
+	relationsOnly bool
 }{
 	{name: "installation_id", kind: "installation"},
 	{name: "x-codex-installation-id", kind: "installation"},
@@ -121,6 +159,11 @@ var codexAccountIdentityFields = []struct {
 	{name: "window_id", kind: "window"},
 	{name: "x-codex-window-id", kind: "window"},
 	{name: "x-client-request-id", kind: "request"},
+	{name: "parent_thread_id", kind: "thread", relationsOnly: true},
+	{name: "x-codex-parent-thread-id", kind: "thread", relationsOnly: true},
+	{name: "forked_from_thread_id", kind: "thread", relationsOnly: true},
+	{name: "parent_turn_id", kind: "turn", relationsOnly: true},
+	{name: "root_turn_id", kind: "turn", relationsOnly: true},
 }
 
 func applyCodexAccountIdentityFields(values map[string]any, account *Account, apiKeyID int64) bool {
@@ -129,6 +172,9 @@ func applyCodexAccountIdentityFields(values map[string]any, account *Account, ap
 	}
 	changed := false
 	for _, field := range codexAccountIdentityFields {
+		if field.relationsOnly && !codexIdentityRelationsEnabled(account) {
+			continue
+		}
 		raw, ok := values[field.name].(string)
 		if !ok || strings.TrimSpace(raw) == "" {
 			continue
@@ -254,6 +300,9 @@ func applyCodexAccountIdentityHeaders(headers http.Header, account *Account, api
 		return
 	}
 	for _, field := range codexAccountIdentityFields {
+		if field.relationsOnly && !codexIdentityRelationsEnabled(account) {
+			continue
+		}
 		// Underscore session/conversation headers are rebuilt separately from the
 		// prompt cache key by each request builder.
 		if field.name == "session_id" {
