@@ -39,13 +39,17 @@ func TestAccount24IdentityRelationsProjection(t *testing.T) {
 			} else {
 				require.NotEqual(t, cm["session_id"], cm["thread_id"])
 			}
-			require.Equal(t, cm["thread_id"].(string)+":2", cm["x-codex-window-id"])
+			mappedThread, ok := cm["thread_id"].(string)
+			require.True(t, ok)
+			require.Equal(t, mappedThread+":2", cm["x-codex-window-id"])
 			require.Equal(t, cm["session_id"], body["prompt_cache_key"])
 			require.Equal(t, cm["session_id"], cm["x-codex-parent-thread-id"])
 			require.Equal(t, cm["turn_id"], cm["root_turn_id"])
 			require.Equal(t, cm["turn_id"], cm["parent_turn_id"])
 			var nested map[string]any
-			require.NoError(t, json.Unmarshal([]byte(cm["x-codex-turn-metadata"].(string)), &nested))
+			metadataJSON, ok := cm["x-codex-turn-metadata"].(string)
+			require.True(t, ok)
+			require.NoError(t, json.Unmarshal([]byte(metadataJSON), &nested))
 			for _, key := range []string{"session_id", "thread_id", "turn_id", "root_turn_id", "parent_turn_id"} {
 				require.Equal(t, cm[key], nested[key])
 			}
@@ -138,7 +142,9 @@ func TestAccount24IdentityRelationsFinalRequestBuilders(t *testing.T) {
 		if passthrough {
 			request, err = svc.buildUpstreamRequestOpenAIPassthrough(context.Background(), c, a, raw, "synthetic-token")
 		} else {
-			request, err = svc.buildUpstreamRequest(context.Background(), c, a, raw, "synthetic-token", true, body["prompt_cache_key"].(string), true)
+			cacheKey, ok := body["prompt_cache_key"].(string)
+			require.True(t, ok)
+			request, err = svc.buildUpstreamRequest(context.Background(), c, a, raw, "synthetic-token", true, cacheKey, true)
 		}
 		require.NoError(t, err)
 		out, err := io.ReadAll(request.Body)
