@@ -912,6 +912,7 @@ func (s *OpenAIGatewayService) handleFailoverErrorResponsePassthrough(
 		UpstreamRequestID:    resp.Header.Get("x-request-id"),
 		Passthrough:          true,
 		Kind:                 "failover",
+		Classification:       classifyOpenAIAttempt(upstreamMsg, body),
 		Message:              upstreamMsg,
 		Detail:               upstreamDetail,
 		UpstreamResponseBody: upstreamDetail,
@@ -1696,6 +1697,7 @@ func (s *OpenAIGatewayService) recordOpenAIStreamUpstreamError(
 			UpstreamRequestID:  strings.TrimSpace(upstreamRequestID),
 			Passthrough:        passthrough,
 			Kind:               kind,
+			Classification:     classifyOpenAIAttempt(message, payload),
 			Message:            message,
 			Detail:             detail,
 		}

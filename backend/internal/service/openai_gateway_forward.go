@@ -1253,6 +1253,7 @@ func (s *OpenAIGatewayService) forward(
 					UpstreamStatusCode: resp.StatusCode,
 					UpstreamRequestID:  resp.Header.Get("x-request-id"),
 					Kind:               "failover",
+					Classification:     classifyOpenAIAttempt(upstreamMsg, respBody),
 					Message:            upstreamMsg,
 					Detail:             upstreamDetail,
 				})
@@ -1320,6 +1321,7 @@ func (s *OpenAIGatewayService) forward(
 							UpstreamStatusCode: compactResp.StatusCode,
 							UpstreamRequestID:  compactResp.Header.Get("x-request-id"),
 							Kind:               "failover",
+							Classification:     classifyOpenAIAttempt(signal.message, compactBody),
 							Message:            signal.message,
 						})
 						shouldDisable := s.handleFailoverSideEffects(ctx, compactResp, account, compactBody, upstreamModel)

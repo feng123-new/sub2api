@@ -107,6 +107,7 @@ func TestHandleOpenAIUpstreamTransportError_PersistentEvictsAndFailsOver(t *test
 	require.NotNil(t, events[0].ProxyID)
 	require.Equal(t, proxyID, *events[0].ProxyID)
 	require.Equal(t, "wldsg82-ipv6-10060", events[0].ProxyName)
+	require.Equal(t, opsUpstreamAttemptClassificationTransportError, events[0].Classification)
 }
 
 // A transient blip should fail over but must NOT evict the account.
@@ -127,6 +128,12 @@ func TestHandleOpenAIUpstreamTransportError_TransientFailsOverWithoutEviction(t 
 	require.Empty(t, repo.tempUnschedCalls)
 	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	require.Equal(t, 0, rec.Body.Len())
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Equal(t, opsUpstreamAttemptClassificationTransportError, events[0].Classification)
 }
 
 // context.Canceled means the client disconnected — do NOT fail over to another
@@ -151,6 +158,12 @@ func TestHandleOpenAIUpstreamTransportError_ContextCanceled_NoFailoverNoEviction
 
 	// Must NOT write a response body.
 	require.Equal(t, 0, rec.Body.Len())
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Equal(t, opsUpstreamAttemptClassificationClientCancel, events[0].Classification)
 }
 
 // context.Canceled wrapped inside another error must also avoid failover.

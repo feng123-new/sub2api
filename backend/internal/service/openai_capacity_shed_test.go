@@ -243,6 +243,37 @@ func TestOpenAIStreamCapacityShedErrorFramePrecedingFailedStillFailsOver(t *test
 	require.True(t, failoverErr.RequestScopedTransient)
 	require.False(t, c.Writer.Written())
 	require.Empty(t, rec.Body.String())
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.NotEmpty(t, events)
+	require.Equal(t, opsUpstreamAttemptClassificationRequestScopedCapacity, events[len(events)-1].Classification)
+}
+
+func TestFailoverOpenAIUpstreamHTTPErrorClassifiesCapacity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	SetOpsUpstreamModel(c, "gpt-5.6-sol")
+
+	body := []byte(`{"error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}`)
+	resp := &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"X-Request-Id": []string{"rid-http-capacity"}}}
+	account := &Account{ID: 160, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "capacity-account"}
+
+	failoverErr := (&OpenAIGatewayService{}).failoverOpenAIUpstreamHTTPError(
+		context.Background(), c, account, resp, body, "Our servers are currently overloaded. Please try again later.", "gpt-5.6-sol",
+	)
+	require.NotNil(t, failoverErr)
+	require.True(t, failoverErr.RequestScopedTransient)
+
+	rawEvents, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := rawEvents.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 1)
+	require.Equal(t, opsUpstreamAttemptClassificationRequestScopedCapacity, events[0].Classification)
 }
 
 // 流中途（已有真实输出）降载时无法再 failover，此时必须把降载码改写为客户端

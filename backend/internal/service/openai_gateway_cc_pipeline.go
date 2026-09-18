@@ -120,6 +120,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		UpstreamStatusCode: resp.StatusCode,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
 		Kind:               "failover",
+		Classification:     classifyOpenAIAttempt(upstreamMsg, respBody),
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
 	})

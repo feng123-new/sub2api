@@ -358,7 +358,11 @@ func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage
 // OpsUpstreamErrorEvent describes one upstream error attempt during a single gateway request.
 // It is stored in ops_error_logs.upstream_errors as a JSON array.
 type OpsUpstreamErrorEvent struct {
-	AtUnixMs int64 `json:"at_unix_ms,omitempty"`
+	AtUnixMs          int64  `json:"at_unix_ms,omitempty"`
+	ErrorEventOrdinal int    `json:"error_event_ordinal,omitempty"`
+	UpstreamModel     string `json:"upstream_model,omitempty"`
+	ClientTransport   string `json:"client_transport,omitempty"`
+	Classification    string `json:"classification,omitempty"`
 
 	// Passthrough 表示本次请求是否命中“原样透传（仅替换认证）”分支。
 	// 该字段用于排障与灰度评估；存入 JSON，不涉及 DB schema 变更。
@@ -410,6 +414,28 @@ type OpsUpstreamErrorEvent struct {
 }
 
 const (
+	opsUpstreamAttemptClassificationRequestScopedCapacity = "request_scoped_capacity"
+	opsUpstreamAttemptClassificationOtherError            = "other_error"
+	opsUpstreamAttemptClassificationTransportError        = "transport_error"
+	opsUpstreamAttemptClassificationClientCancel          = "client_cancel"
+)
+
+func normalizeOpsUpstreamAttemptClassification(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case opsUpstreamAttemptClassificationRequestScopedCapacity:
+		return opsUpstreamAttemptClassificationRequestScopedCapacity
+	case opsUpstreamAttemptClassificationOtherError:
+		return opsUpstreamAttemptClassificationOtherError
+	case opsUpstreamAttemptClassificationTransportError:
+		return opsUpstreamAttemptClassificationTransportError
+	case opsUpstreamAttemptClassificationClientCancel:
+		return opsUpstreamAttemptClassificationClientCancel
+	default:
+		return ""
+	}
+}
+
+const (
 	opsProxyNameDirect  = "direct/no_proxy"
 	opsProxyNameUnknown = "unknown"
 	// opsProxyNameUnnamed labels a managed proxy whose name is blank. The
@@ -444,6 +470,17 @@ func appendOpsUpstreamError(c *gin.Context, ev OpsUpstreamErrorEvent) {
 		if arr, ok := v.([]*OpsUpstreamErrorEvent); ok {
 			existing = arr
 		}
+	}
+	ev.ErrorEventOrdinal = len(existing) + 1
+	if v, ok := c.Get(OpsUpstreamModelKey); ok {
+		if model, ok := v.(string); ok {
+			ev.UpstreamModel = truncateString(strings.TrimSpace(model), 128)
+		}
+	}
+	ev.ClientTransport = string(GetOpenAIClientTransport(c))
+	ev.Classification = normalizeOpsUpstreamAttemptClassification(ev.Classification)
+	if ev.Classification == "" && ev.Platform == PlatformOpenAI && ev.Kind != "" {
+		ev.Classification = opsUpstreamAttemptClassificationOtherError
 	}
 
 	evCopy := ev
