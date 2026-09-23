@@ -195,6 +195,25 @@ async function openCodexImportStep(toggleClicks = 0) {
 }
 
 describe('CreateAccountModal OpenAI long-context billing', () => {
+  it.each(['allow', 'deny', 'inherit'])('persists ticket policy %s through Codex import', async policy => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    const field = wrapper.findComponent({ name: 'CodexTicketPolicyField' })
+    expect(field.exists()).toBe(true)
+    expect(field.props('modelValue')).toBe('inherit')
+    field.vm.$emit('update:modelValue', policy)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Codex import')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+    expect(importCodexSessionMock).toHaveBeenCalledTimes(1)
+    const extra = importCodexSessionMock.mock.calls[0]?.[0]?.extra
+    if (policy === 'inherit') expect(extra).not.toHaveProperty('codex_allow_without_ticket')
+    else expect(extra?.codex_allow_without_ticket).toBe(policy === 'allow')
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     authIsSimpleMode.value = true
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
@@ -443,6 +462,65 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
     expect(createAccountMock.mock.calls[0]?.[0]?.upstream_billing_probe_enabled).toBe(false)
     expect(probeUpstreamBillingMock).not.toHaveBeenCalled()
+  })
+
+  it('submits OpenCode Zen default protocol rules with adaptive endpoints', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenCode')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('oc')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-opencode-zen')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'zen',
+      api_protocol: 'adaptive',
+      base_url: 'https://opencode.ai/zen/v1',
+      api_base_urls: {
+        chat_completions: 'https://opencode.ai/zen/v1',
+        anthropic: 'https://opencode.ai/zen',
+        responses: 'https://opencode.ai/zen/v1'
+      },
+      protocol_rules: [
+        { pattern: 'grok-*', protocol: 'responses' },
+        { pattern: 'gpt-*', protocol: 'responses' },
+        { pattern: 'muse-spark-*', protocol: 'responses' },
+        { pattern: 'claude-*', protocol: 'anthropic' },
+        { pattern: 'qwen*', protocol: 'anthropic' }
+      ]
+    })
+  })
+
+  it('submits OpenCode GO endpoints after switching account type', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenCode')
+    await selectButtonByText(wrapper, 'admin.accounts.opencodeGo.accountMode.go')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('oc-go')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('sk-opencode-go')
+
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      account_mode: 'go',
+      api_protocol: 'adaptive',
+      base_url: 'https://opencode.ai/zen/go/v1',
+      api_base_urls: {
+        chat_completions: 'https://opencode.ai/zen/go/v1',
+        anthropic: 'https://opencode.ai/zen/go',
+        responses: 'https://opencode.ai/zen/go/v1'
+      },
+      protocol_rules: [
+        { pattern: 'grok-*', protocol: 'responses' },
+        { pattern: 'gpt-*', protocol: 'responses' },
+        { pattern: 'muse-spark-*', protocol: 'responses' },
+        { pattern: 'minimax-*', protocol: 'anthropic' },
+        { pattern: 'qwen*', protocol: 'anthropic' }
+      ]
+    })
   })
 
   it('submits adaptive Kimi protocol endpoints', async () => {

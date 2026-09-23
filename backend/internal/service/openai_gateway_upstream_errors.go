@@ -472,6 +472,13 @@ func (e *UpstreamFailoverError) IsOpenAICapacityShed() bool {
 	return e != nil && e.RequestScopedTransient && isOpenAIRequestScopedCapacityShed("", e.ResponseBody)
 }
 
+func classifyOpenAIAttempt(message string, body []byte) string {
+	if isOpenAIRequestScopedCapacityShed(message, body) {
+		return opsUpstreamAttemptClassificationRequestScopedCapacity
+	}
+	return opsUpstreamAttemptClassificationOtherError
+}
+
 func marshalOpenAIUpstreamJSON(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -695,6 +702,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		UpstreamStatusCode: resp.StatusCode,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
 		Kind:               kind,
+		Classification:     classifyOpenAIAttempt(upstreamMsg, body),
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
 	})
@@ -906,6 +914,7 @@ func (s *OpenAIGatewayService) handleCompatErrorResponse(
 		UpstreamStatusCode: resp.StatusCode,
 		UpstreamRequestID:  resp.Header.Get("x-request-id"),
 		Kind:               kind,
+		Classification:     classifyOpenAIAttempt(upstreamMsg, body),
 		Message:            upstreamMsg,
 		Detail:             upstreamDetail,
 	})

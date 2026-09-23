@@ -201,6 +201,47 @@ func TestOpsUpstreamErrorEventRetryKeepsExplicitAttemptProxy(t *testing.T) {
 	}
 }
 
+func TestOpsUpstreamErrorEventAddsSanitizedAttemptMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	SetOpsUpstreamModel(c, "  gpt-5.6-sol  ")
+
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		ErrorEventOrdinal: 99,
+		Classification:    " request_scoped_capacity ",
+		Kind:              "failover",
+	})
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Classification: "secret-from-caller",
+		Kind:           "http_error",
+	})
+
+	raw, ok := c.Get(OpsUpstreamErrorsKey)
+	require.True(t, ok)
+	events, ok := raw.([]*OpsUpstreamErrorEvent)
+	require.True(t, ok)
+	require.Len(t, events, 2)
+
+	require.Equal(t, 1, events[0].ErrorEventOrdinal)
+	require.Equal(t, "gpt-5.6-sol", events[0].UpstreamModel)
+	require.Equal(t, "http", events[0].ClientTransport)
+	require.Equal(t, "request_scoped_capacity", events[0].Classification)
+	require.Equal(t, 2, events[1].ErrorEventOrdinal)
+	require.Equal(t, "gpt-5.6-sol", events[1].UpstreamModel)
+	require.Equal(t, "http", events[1].ClientTransport)
+	require.Empty(t, events[1].Classification)
+
+	encoded := marshalOpsUpstreamErrors(events)
+	require.NotNil(t, encoded)
+	require.Contains(t, *encoded, `"error_event_ordinal":1`)
+	require.Contains(t, *encoded, `"upstream_model":"gpt-5.6-sol"`)
+	require.Contains(t, *encoded, `"client_transport":"http"`)
+	require.Contains(t, *encoded, `"classification":"request_scoped_capacity"`)
+	require.NotContains(t, *encoded, "secret-from-caller")
+}
+
 func TestNormalizeOpsUpstreamProxyAttributionEnforcesSentinelInvariant(t *testing.T) {
 	positive := int64(7)
 	zero := int64(0)

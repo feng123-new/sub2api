@@ -107,6 +107,11 @@ func classifyUpstreamTransportError(err error) upstreamTransportErrorClass {
 // passthrough tags the Ops error event for the OpenAI passthrough forward path.
 func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Context, c *gin.Context, account *Account, err error, passthrough bool) error {
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
+	clientCanceled := errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded))
+	classification := opsUpstreamAttemptClassificationTransportError
+	if clientCanceled {
+		classification = opsUpstreamAttemptClassificationClientCancel
+	}
 	setOpsUpstreamError(c, 0, safeErr, "")
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 		ProxyID:            opsUpstreamProxyID(account),
@@ -117,12 +122,13 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		UpstreamStatusCode: 0,
 		Passthrough:        passthrough,
 		Kind:               "request_error",
+		Classification:     classification,
 		Message:            safeErr,
 	})
 
 	// Client disconnected: do NOT fail over to another account and do NOT evict
 	// this one — the upstream never had a chance to exhibit a fault.
-	if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded)) {
+	if clientCanceled {
 		return err
 	}
 

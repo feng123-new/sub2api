@@ -4,6 +4,104 @@
  */
 
 import { apiClient } from '../client'
+
+export type CodexTicketStatus = NonNullable<Account['codex_turn_tickets']>[number]
+
+export interface CodexTicketAttempt {
+  validation_outcome?: string
+  validation_checked_at?: string
+  validation_http_status?: number
+  id: number
+  account_id: number
+  model: string
+  occurred_at: string
+  outcome: 'success' | 'miss' | 'error'
+  trigger: 'automatic' | 'manual'
+  http_status: number | null
+  ticket_length: number | null
+  duration_ms: number
+  reason_code?: string
+  proxy_id?: number
+  proxy_name?: string
+  expires_at?: string
+}
+
+export interface CodexTicketHistory {
+  items: CodexTicketAttempt[]
+  total: number
+  page: number
+  page_size: number
+  ticket_status: CodexTicketStatus
+  manual_available: boolean
+  manual_unavailable_reason: string
+}
+
+export interface CodexTicketHarvestResult extends CodexTicketAttempt {
+  ticket_status: CodexTicketStatus
+  history_recorded: boolean
+}
+
+export async function getCodexTicketHistory(id: number, model: string, filter: 'all' | 'success', page: number): Promise<CodexTicketHistory> {
+  const { data } = await apiClient.get<CodexTicketHistory>(`/admin/accounts/${id}/codex-ticket-history`, {
+    params: { model, filter, page, page_size: 20 }
+  })
+  return data
+}
+
+export async function harvestCodexTicket(id: number, model: string): Promise<CodexTicketHarvestResult> {
+  const { data } = await apiClient.post<CodexTicketHarvestResult>(`/admin/accounts/${id}/codex-ticket-harvest`, { model })
+  return data
+}
+
+export interface CodexTicketMaterial {
+  attempt_id: number
+  account_id: number
+  model: string
+  ticket: string
+  captured_at: string
+  expires_at: string
+}
+export interface CodexTicketValidation {
+  locked?: boolean
+  attempt_id: number
+  model: string
+  outcome: string
+  http_status: number
+  completed: boolean
+  checked_at: string
+}
+export interface CodexTicketBinding {
+  last_validation?: { attempt_id: number; outcome: string; http_status: number; checked_at: string } | null
+  pin: { attempt_id: number; confirmed_at: string; expires_at: string } | null
+  active: boolean
+  enabled: boolean
+  model_enabled: boolean
+  last_check: { checked_at?: string; outcome?: string; http_status?: number }
+}
+export async function getCodexTicketBinding(id: number, model: string): Promise<CodexTicketBinding> {
+  const { data } = await apiClient.get<CodexTicketBinding>(`/admin/accounts/${id}/codex-ticket-binding`, { params: { model } })
+  return data
+}
+export async function confirmCodexTicketBinding(id: number, model: string, attemptId: number): Promise<CodexTicketValidation> {
+  const { data } = await apiClient.post<CodexTicketValidation>(`/admin/accounts/${id}/codex-ticket-binding`, { model, attempt_id: attemptId }, { timeout: 45000 })
+  return data
+}
+export async function unpinCodexTicket(id: number, model: string): Promise<void> {
+  await apiClient.delete(`/admin/accounts/${id}/codex-ticket-binding`, { params: { model } })
+}
+
+export async function getCodexTicketMaterial(id: number, model: string, attemptId: number): Promise<CodexTicketMaterial> {
+  const { data } = await apiClient.get<CodexTicketMaterial>(`/admin/accounts/${id}/codex-ticket-material`, { params: { model, attempt_id: attemptId } })
+  return data
+}
+export async function validateCodexTicketMaterial(id: number, model: string, attemptId?: number): Promise<CodexTicketValidation> {
+  const { data } = await apiClient.post<CodexTicketValidation>(`/admin/accounts/${id}/codex-ticket-validate`, { model, attempt_id: attemptId ?? 0 }, { timeout: 45000 })
+  return data
+}
+
+export async function setCodexTicketParticipation(id: number, enabled: boolean, models: Record<string, boolean>): Promise<void> {
+  await apiClient.put(`/admin/accounts/${id}/codex-ticket-participation`, { enabled, models })
+}
 import type {
   Account,
   AccountListItem,
@@ -325,9 +423,13 @@ export async function testAccount(id: number): Promise<{
  * @param id - Account ID
  * @returns Updated account
  */
-export async function refreshCredentials(id: number): Promise<Account> {
-  const { data } = await apiClient.post<Account>(`/admin/accounts/${id}/refresh`)
-  return data
+export type RefreshCredentialsResult =
+  | { account: Account; message: string; warning: 'missing_project_id_temporary' }
+  | { account: Account; message?: never; warning?: never }
+
+export async function refreshCredentials(id: number): Promise<RefreshCredentialsResult> {
+  const { data } = await apiClient.post<Account | RefreshCredentialsResult>(`/admin/accounts/${id}/refresh`)
+  return 'account' in data ? data : { account: data }
 }
 
 /**
@@ -634,6 +736,7 @@ export interface UpstreamModelMetadata {
   supported_reasoning_levels?: string[]
   input_modalities?: string[]
   context_window?: number
+  max_context_window?: number
   max_output_tokens?: number
 }
 
@@ -1081,6 +1184,9 @@ export async function refreshOllamaCloudUsage(id: number): Promise<OllamaCloudUs
 }
 
 export const accountsAPI = {
+  getCodexTicketHistory,
+  harvestCodexTicket,
+  setCodexTicketParticipation,
   list,
   listWithEtag,
   getUpstreamBillingRatesWithEtag,

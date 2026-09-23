@@ -24,7 +24,7 @@
               v-model="filters.protocol"
               :options="protocolOptions"
               :placeholder="t('admin.proxies.allProtocols')"
-              @change="loadProxies"
+              @change="handleFilterChange"
             />
           </div>
           <div class="w-full sm:w-36">
@@ -32,12 +32,13 @@
               v-model="filters.status"
               :options="statusOptions"
               :placeholder="t('admin.proxies.allStatus')"
-              @change="loadProxies"
+              @change="handleFilterChange"
             />
           </div>
 
           <!-- Right: All action buttons -->
           <div class="flex flex-1 flex-wrap items-center justify-end gap-2">
+            <button class="btn btn-secondary" @click="showCodexTicketPool = true">{{ t('admin.accounts.codexTicket.poolTitle') }}</button>
             <button
               @click="loadProxies"
               :disabled="loading"
@@ -960,6 +961,7 @@
         </div>
       </template>
     </BaseDialog>
+    <CodexTicketPoolDialog :show="showCodexTicketPool" @close="showCodexTicketPool = false" />
   </AppLayout>
 </template>
 
@@ -975,6 +977,7 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import CodexTicketPoolDialog from '@/components/admin/proxy/CodexTicketPoolDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ImportDataModal from '@/components/admin/proxy/ImportDataModal.vue'
@@ -1038,6 +1041,7 @@ const editStatusOptions = computed(() => [
 ])
 
 const proxies = ref<Proxy[]>([])
+const showCodexTicketPool = ref(false)
 const visiblePasswordIds = reactive(new Set<number>())
 const copyMenuProxyId = ref<number | null>(null)
 const loading = ref(false)
@@ -1219,6 +1223,11 @@ const loadProxies = async () => {
       abortController = null
     }
   }
+}
+
+const handleFilterChange = () => {
+  pagination.page = 1
+  loadProxies()
 }
 
 let searchTimeout: ReturnType<typeof setTimeout>
@@ -1456,7 +1465,7 @@ const handleUpdateProxy = async () => {
       protocol: editForm.protocol,
       host: editForm.host.trim(),
       port: editForm.port,
-      username: editForm.username.trim() || null,
+      username: editForm.username.trim(),
       status: editForm.status,
       expires_at: editForm.expires_at ? Math.floor(new Date(editForm.expires_at).getTime() / 1000) : null,
       fallback_mode: editForm.fallback_mode,
@@ -1466,7 +1475,7 @@ const handleUpdateProxy = async () => {
 
     // Only include password if user actually modified the field
     if (editPasswordDirty.value) {
-      updateData.password = editForm.password.trim() || null
+      updateData.password = editForm.password.trim()
     }
 
     await adminAPI.proxies.update(editingProxy.value.id, updateData)

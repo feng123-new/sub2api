@@ -303,6 +303,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		OpenAICodexClientVersion:                               settings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                         settings.OpenAICodexClientVersionSynced,
 		OpenAICodexVersionAutoSyncEnabled:                      settings.OpenAICodexVersionAutoSyncEnabled,
+		OpenAICodexTicketEnabled:                               settings.OpenAICodexTicketEnabled,
+		OpenAICodexTicketAllowWithoutTicket:                    settings.OpenAICodexTicketAllowWithoutTicket,
+		OpenAICodexTicketHarvestProxyURL:                       service.MaskProxyURL(settings.OpenAICodexTicketHarvestProxyURL),
+		OpenAICodexTicketHarvestProxyConfigured:                strings.TrimSpace(settings.OpenAICodexTicketHarvestProxyURL) != "",
 		MinCodexVersion:                                        settings.MinCodexVersion,
 		MaxCodexVersion:                                        settings.MaxCodexVersion,
 		CodexCLIOnlyBlacklist:                                  settings.CodexCLIOnlyBlacklist,
@@ -383,6 +387,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		GrokDefaultBaseURLMode:         settings.GrokDefaultBaseURLMode,
 
 		AvailableChannelsEnabled: settings.AvailableChannelsEnabled,
+		SubscriptionEnabled:      settings.SubscriptionEnabled,
 
 		ModelPlazaEnabled:       settings.ModelPlazaEnabled,
 		ModelPlazaRequireAuth:   settings.ModelPlazaRequireAuth,

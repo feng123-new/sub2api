@@ -106,6 +106,40 @@ describe('AccountUsageCell', () => {
     })
   })
 
+  it.each(['oauth', 'setup-token'] as const)('keeps Codex ticket status out of the usage cell for OpenAI %s accounts', async (type) => {
+    getUsage.mockResolvedValue({})
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account: makeAccount({
+          id: type === 'oauth' ? 9701 : 9702,
+          platform: 'openai',
+          type,
+          codex_turn_tickets: [
+            { model: 'gpt-6-astra', ready: true, remaining_seconds: 2520, blocked: false },
+            { model: 'gpt-5.6-sol', ready: false, remaining_seconds: 0, blocked: true },
+            { model: 'custom-model', ready: false, remaining_seconds: 0, blocked: false },
+          ],
+        }),
+      },
+      global: { stubs: {
+        OpenAIQuotaResetCell: { template: '<div data-test="quota-reset" />' },
+        UsageProgressBar: true,
+        AccountQuotaInfo: true,
+      } },
+    })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('42m00s')
+    expect(wrapper.text()).not.toContain('codexTurnTicket')
+    if (type === 'setup-token') {
+      expect(getUsage).not.toHaveBeenCalled()
+      expect(wrapper.find('[data-test="quota-reset"]').exists()).toBe(false)
+    }
+    await wrapper.setProps({ account: { ...wrapper.props('account'), codex_turn_tickets: [] } })
+    expect(wrapper.text()).not.toContain('codexTurnTicket')
+    expect(wrapper.text()).not.toContain('42m00s')
+    wrapper.unmount()
+  })
+
   it('renders eligible Ollama Cloud state and forwards query updates', async () => {
     const wrapper = mount(AccountUsageCell, {
       props: {

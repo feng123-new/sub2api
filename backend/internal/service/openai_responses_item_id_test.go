@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -37,10 +39,63 @@ func TestOpenAIResponsesInputItemIDPrefixUsesObservedOutputContracts(t *testing.
 		{itemType: "tool_search_output", id: "tso_123", strip: false},
 		{itemType: "mcp_tool_call_output", id: "mcpo_123", strip: false},
 		{itemType: "future_item", id: "item_123", strip: false},
+		{itemType: "message", id: "msg_" + strings.Repeat("a", 60), strip: false},
+		{itemType: "message", id: "msg_" + strings.Repeat("a", 61), strip: true},
+		{itemType: "function_call", id: "fc_" + strings.Repeat("a", 75), strip: true},
+		{itemType: "function_call_output", id: strings.Repeat("a", 65), strip: true},
+		{itemType: "", id: "msg_" + strings.Repeat("a", 61), strip: true},
+		// A reference requires its original ID; removing it would lose context.
+		{itemType: "item_reference", id: strings.Repeat("a", 78), strip: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.itemType+"/"+tt.id, func(t *testing.T) {
 			require.Equal(t, tt.strip, shouldStripOpenAIResponsesInputItemID(tt.itemType, tt.id))
+		})
+	}
+}
+
+func TestSanitizeOpenAIResponsesInputItemIDsLengthLimit(t *testing.T) {
+	for _, length := range []int{64, 65, 78} {
+		t.Run(strconv.Itoa(length), func(t *testing.T) {
+			messageID := "msg_" + strings.Repeat("a", length-4)
+			callItemID := "fc_" + strings.Repeat("b", length-3)
+			outputID := "fco_" + strings.Repeat("c", length-4)
+			callID := "call_" + strings.Repeat("d", 59)
+			body := []byte(fmt.Sprintf(`{"input":[
+				{"type":"message","id":%q,"role":"user","content":"check lookup"},
+				{"type":"function_call","id":%q,"call_id":%q,"name":"lookup","arguments":"{}"},
+				{"type":"function_call_output","id":%q,"call_id":%q,"output":"OK","sequence":9007199254740993},
+				{"type":"item_reference","id":"msg_remote"}
+			]}`, messageID, callItemID, callID, outputID, callID))
+			original := string(body)
+
+			sanitized, changed, err := sanitizeOpenAIResponsesInputItemIDs(body)
+
+			require.NoError(t, err)
+			require.Equal(t, length > 64, changed)
+			require.Equal(t, original, string(body), "input must not be mutated")
+			items := gjson.GetBytes(sanitized, "input").Array()
+			require.Len(t, items, 4)
+			for i, id := range []string{messageID, callItemID, outputID} {
+				if length > 64 {
+					require.False(t, items[i].Get("id").Exists())
+				} else {
+					require.Equal(t, id, items[i].Get("id").String())
+				}
+			}
+			require.Equal(t, "check lookup", items[0].Get("content").String())
+			require.Equal(t, callID, items[1].Get("call_id").String())
+			require.Equal(t, callID, items[2].Get("call_id").String())
+			require.Equal(t, "lookup", items[1].Get("name").String())
+			require.Equal(t, "{}", items[1].Get("arguments").String())
+			require.Equal(t, "OK", items[2].Get("output").String())
+			require.Equal(t, "9007199254740993", items[2].Get("sequence").Raw)
+			require.Equal(t, "msg_remote", items[3].Get("id").String())
+
+			second, changedAgain, err := sanitizeOpenAIResponsesInputItemIDs(sanitized)
+			require.NoError(t, err)
+			require.False(t, changedAgain)
+			require.Equal(t, sanitized, second)
 		})
 	}
 }

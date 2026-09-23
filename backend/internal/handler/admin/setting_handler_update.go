@@ -257,6 +257,9 @@ type UpdateSettingsRequest struct {
 	OpenAICodexUserAgent                   *string `json:"openai_codex_user_agent"`
 	OpenAICodexClientVersion               *string `json:"openai_codex_client_version"`
 	OpenAICodexVersionAutoSyncEnabled      *bool   `json:"openai_codex_version_auto_sync_enabled"`
+	OpenAICodexTicketEnabled               *bool   `json:"openai_codex_ticket_enabled"`
+	OpenAICodexTicketAllowWithoutTicket    *bool   `json:"openai_codex_ticket_allow_without_ticket"`
+	OpenAICodexTicketHarvestProxyURL       string  `json:"openai_codex_ticket_harvest_proxy_url"`
 
 	// codex_cli_only 加固（global-only）
 	MinCodexVersion                      string `json:"min_codex_version"`
@@ -343,6 +346,9 @@ type UpdateSettingsRequest struct {
 
 	// Available Channels feature switch (user-facing)
 	AvailableChannelsEnabled *bool `json:"available_channels_enabled"`
+
+	// Subscription feature switch (user-facing subscription surface; see SettingKeySubscriptionEnabled)
+	SubscriptionEnabled *bool `json:"subscription_enabled"`
 
 	// Model Plaza feature switches + description
 	ModelPlazaEnabled     *bool   `json:"model_plaza_enabled"`
@@ -1765,6 +1771,25 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAICodexVersionAutoSyncEnabled
 		}(),
+		OpenAICodexTicketEnabled: func() bool {
+			if req.OpenAICodexTicketEnabled != nil {
+				return *req.OpenAICodexTicketEnabled
+			}
+			return previousSettings.OpenAICodexTicketEnabled
+		}(),
+		OpenAICodexTicketAllowWithoutTicket: func() bool {
+			if req.OpenAICodexTicketAllowWithoutTicket != nil {
+				return *req.OpenAICodexTicketAllowWithoutTicket
+			}
+			return previousSettings.OpenAICodexTicketAllowWithoutTicket
+		}(),
+		OpenAICodexTicketHarvestProxyURL: func() string {
+			next := strings.TrimSpace(req.OpenAICodexTicketHarvestProxyURL)
+			if service.IsMaskedProxyURL(next) {
+				return previousSettings.OpenAICodexTicketHarvestProxyURL
+			}
+			return next
+		}(),
 		MinCodexVersion:       strings.TrimSpace(req.MinCodexVersion),
 		MaxCodexVersion:       strings.TrimSpace(req.MaxCodexVersion),
 		CodexCLIOnlyBlacklist: strings.TrimSpace(req.CodexCLIOnlyBlacklist),
@@ -1936,6 +1961,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 				return *req.AvailableChannelsEnabled
 			}
 			return previousSettings.AvailableChannelsEnabled
+		}(),
+		SubscriptionEnabled: func() bool {
+			if req.SubscriptionEnabled != nil {
+				return *req.SubscriptionEnabled
+			}
+			return previousSettings.SubscriptionEnabled
 		}(),
 		ModelPlazaEnabled: func() bool {
 			if req.ModelPlazaEnabled != nil {
@@ -2301,6 +2332,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		OpenAICodexClientVersion:                               updatedSettings.OpenAICodexClientVersion,
 		OpenAICodexClientVersionSynced:                         updatedSettings.OpenAICodexClientVersionSynced,
 		OpenAICodexVersionAutoSyncEnabled:                      updatedSettings.OpenAICodexVersionAutoSyncEnabled,
+		OpenAICodexTicketEnabled:                               updatedSettings.OpenAICodexTicketEnabled,
+		OpenAICodexTicketAllowWithoutTicket:                    updatedSettings.OpenAICodexTicketAllowWithoutTicket,
+		OpenAICodexTicketHarvestProxyURL:                       service.MaskProxyURL(updatedSettings.OpenAICodexTicketHarvestProxyURL),
+		OpenAICodexTicketHarvestProxyConfigured:                strings.TrimSpace(updatedSettings.OpenAICodexTicketHarvestProxyURL) != "",
 		MinCodexVersion:                                        updatedSettings.MinCodexVersion,
 		MaxCodexVersion:                                        updatedSettings.MaxCodexVersion,
 		CodexCLIOnlyBlacklist:                                  updatedSettings.CodexCLIOnlyBlacklist,
@@ -2380,6 +2415,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		GrokDefaultBaseURLMode:         updatedSettings.GrokDefaultBaseURLMode,
 
 		AvailableChannelsEnabled: updatedSettings.AvailableChannelsEnabled,
+		SubscriptionEnabled:      updatedSettings.SubscriptionEnabled,
 
 		ModelPlazaEnabled:       updatedSettings.ModelPlazaEnabled,
 		ModelPlazaRequireAuth:   updatedSettings.ModelPlazaRequireAuth,
