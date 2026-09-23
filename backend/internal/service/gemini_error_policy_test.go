@@ -670,6 +670,73 @@ func TestHandleGeminiUpstreamError_PoolMode429(t *testing.T) {
 	}
 }
 
+// Vertex（service_account）429 响应带 google.rpc.RetryInfo 时，应按 retryDelay 冷却，
+// 而不是回退到 PST 午夜。
+func TestHandleGeminiUpstreamError_VertexRetryInfoUsesParsedDelay(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+
+	account := &Account{
+		ID:       601,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "my-vertex-project",
+			"location":   "global",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"39s"}]}}`)
+
+	before := time.Now()
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(601), repo.lastRateLimitID)
+	require.WithinDuration(t, before.Add(39*time.Second), repo.lastRateLimitReset, 2*time.Second)
+}
+
+// 保留线上定制：无重置信号的 Vertex 容量错误只触发本次请求故障转移。
+func TestHandleGeminiUpstreamError_VertexFallbackPreservesRequestScopedFailover(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+
+	account := &Account{
+		ID:       602,
+		Platform: PlatformGemini,
+		Type:     AccountTypeServiceAccount,
+		Credentials: map[string]any{
+			"project_id": "my-vertex-project",
+		},
+	}
+	body := []byte(`{"error":{"code":429,"message":"Resource exhausted. Please try again later.","status":"RESOURCE_EXHAUSTED"}}`)
+
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Zero(t, repo.rateLimitCalls)
+	require.Zero(t, repo.lastRateLimitID)
+	require.True(t, repo.lastRateLimitReset.IsZero())
+}
+
+// API Key（AI Studio）无法解析重置时间时仍冷却到 PST 午夜，行为保持不变。
+func TestHandleGeminiUpstreamError_APIKeyFallbackStillPSTMidnight(t *testing.T) {
+	repo := &rateLimit429AccountRepoStub{}
+	svc := &GeminiMessagesCompatService{accountRepo: repo}
+
+	account := &Account{
+		ID:       603,
+		Platform: PlatformGemini,
+		Type:     AccountTypeAPIKey,
+	}
+	body := []byte(`{"error":{"code":429,"message":"rate limit"}}`)
+
+	svc.handleGeminiUpstreamError(context.Background(), account, http.StatusTooManyRequests, http.Header{}, body)
+
+	require.Equal(t, 1, repo.rateLimitCalls)
+	require.Equal(t, int64(603), repo.lastRateLimitID)
+	expected := time.Unix(*nextGeminiDailyResetUnix(), 0)
+	require.WithinDuration(t, expected, repo.lastRateLimitReset, 5*time.Second)
+}
+
 type geminiErrorPolicyRepo struct {
 	mockAccountRepoForGemini
 	setErrorCalls            int

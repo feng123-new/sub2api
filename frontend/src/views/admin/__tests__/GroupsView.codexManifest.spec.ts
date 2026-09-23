@@ -7,40 +7,39 @@ import type { AdminGroup, CodexModelsManifestConfig } from "@/types";
 import GroupsView from "@/views/admin/GroupsView.vue";
 
 const {
-	listGroups,
-	getModelsListCandidates,
-	getUsageSummary,
-	getCapacitySummary,
-	getLiveCapability,
+  listGroups,
+  getModelAllowlistCandidates,
+  getUsageSummary,
+  getCapacitySummary,
+  getLiveCapability,
 } = vi.hoisted(() => ({
-	listGroups: vi.fn(),
-	getModelsListCandidates: vi.fn(),
-	getUsageSummary: vi.fn(),
-	getCapacitySummary: vi.fn(),
-	getLiveCapability: vi.fn(),
+  listGroups: vi.fn(),
+  getModelAllowlistCandidates: vi.fn(),
+  getUsageSummary: vi.fn(),
+  getCapacitySummary: vi.fn(),
+  getLiveCapability: vi.fn(),
 }));
 
 vi.mock("@/api/admin", () => ({
-	adminAPI: {
-		groups: {
-			list: listGroups,
-			getAll: vi.fn(),
-			getModelsListCandidates,
-			getModelAllowlistCandidates: getModelsListCandidates,
-			getUsageSummary,
-			getCapacitySummary,
-			getLiveCapability,
-			create: vi.fn(),
-			update: vi.fn(),
-			delete: vi.fn(),
-			duplicate: vi.fn(),
-			updateSortOrder: vi.fn(),
-		},
-		accounts: {
-			list: vi.fn(),
-			getById: vi.fn(),
-		},
-	},
+  adminAPI: {
+    groups: {
+      list: listGroups,
+      getAll: vi.fn(),
+      getModelAllowlistCandidates,
+      getUsageSummary,
+      getCapacitySummary,
+      getLiveCapability,
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      duplicate: vi.fn(),
+      updateSortOrder: vi.fn(),
+    },
+    accounts: {
+      list: vi.fn(),
+      getById: vi.fn(),
+    },
+  },
 }));
 
 vi.mock("@/stores/app", () => ({
@@ -206,52 +205,52 @@ const CodexManifestAccountsFieldStub = defineComponent({
 });
 
 const mountView = () =>
-	mount(GroupsView, {
-		global: {
-			plugins: [createPinia()],
-			stubs: {
-				AppLayout: AppLayoutStub,
-				TablePageLayout: TablePageLayoutStub,
-				DataTable: DataTableStub,
-				Pagination: true,
-				BaseDialog: BaseDialogStub,
-				ConfirmDialog: true,
-				EmptyState: true,
-				Select: true,
-				PlatformIcon: true,
-				Icon: true,
-				GroupCapacityBadge: true,
-				GroupRateMultipliersModal: true,
-				GroupRPMOverridesModal: true,
-				ReasoningEffortPolicyFields: true,
-				CodexManifestAccountsField: CodexManifestAccountsFieldStub,
-				PricingEntryCard: true,
-				VueDraggable: true,
-			},
-		},
-	});
+  mount(GroupsView, {
+    global: {
+      plugins: [createPinia()],
+      stubs: {
+        AppLayout: AppLayoutStub,
+        TablePageLayout: TablePageLayoutStub,
+        DataTable: DataTableStub,
+        Pagination: true,
+        BaseDialog: BaseDialogStub,
+        ConfirmDialog: true,
+        EmptyState: true,
+        Select: true,
+        PlatformIcon: true,
+        Icon: true,
+        GroupCapacityBadge: true,
+        GroupRateMultipliersModal: true,
+        GroupRPMOverridesModal: true,
+        ReasoningEffortPolicyFields: true,
+        CodexManifestAccountsField: CodexManifestAccountsFieldStub,
+        PricingEntryCard: true,
+        VueDraggable: true,
+      },
+    },
+  });
 
 describe("GroupsView Codex manifest binding", () => {
-	beforeEach(() => {
-		localStorage.clear();
-		listGroups.mockReset();
-		getModelsListCandidates.mockReset();
-		getUsageSummary.mockReset();
-		getCapacitySummary.mockReset();
-		getLiveCapability.mockReset();
+  beforeEach(() => {
+    localStorage.clear();
+    listGroups.mockReset();
+    getModelAllowlistCandidates.mockReset();
+    getUsageSummary.mockReset();
+    getCapacitySummary.mockReset();
+    getLiveCapability.mockReset();
 
-		listGroups.mockResolvedValue({
-			items: [sourceGroup],
-			total: 1,
-			page: 1,
-			page_size: 20,
-			pages: 1,
-		});
-		getModelsListCandidates.mockResolvedValue([]);
-		getUsageSummary.mockResolvedValue([]);
-		getCapacitySummary.mockResolvedValue([]);
-		getLiveCapability.mockResolvedValue({ supported: false });
-	});
+    listGroups.mockResolvedValue({
+      items: [sourceGroup],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    });
+    getModelAllowlistCandidates.mockResolvedValue([]);
+    getUsageSummary.mockResolvedValue([]);
+    getCapacitySummary.mockResolvedValue([]);
+    getLiveCapability.mockResolvedValue({ supported: false });
+  });
 
 	it("preserves consecutive child updates on the reactive edit config", async () => {
 		const wrapper = mountView();
