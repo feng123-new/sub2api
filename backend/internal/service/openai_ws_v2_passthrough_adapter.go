@@ -1499,6 +1499,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 			AfterClientWrite: func(msgType coderws.MessageType, payload []byte, writeErr error) {
 				if msgType == coderws.MessageText && writeErr == nil {
 					eventType, _, _ := parseOpenAIWSEventEnvelope(payload)
+					turnModel, _ := usageMeta.turnModels(capturedSessionModel)
+					// The relay settles a terminal event before invoking AfterClientWrite.
+					if successfulGeneratedImageResponse(payload) {
+						s.captureGeneratedImage(c, account, turnModel, payload, int(completedTurns.Load()))
+					}
 					markOpenAIWSClientVisibleFailure(c, eventType, payload)
 				}
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {

@@ -764,6 +764,9 @@ func (s *OpenAIGatewayService) ForwardGrokMedia(
 		)
 	}
 	writeGrokMediaResponse(c, resp, respBody, s.responseHeaderFilter)
+	if endpoint == GrokMediaEndpointImagesGenerations || endpoint == GrokMediaEndpointImagesEdits {
+		s.captureGeneratedImage(c, account, requestModel, respBody, 0)
+	}
 	usage := grokMediaUsageFromResponse(endpoint, requestInfo, respBody)
 	resultModel := requestModel
 	resultBillingModel := requestModel

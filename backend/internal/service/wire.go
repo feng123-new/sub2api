@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"path/filepath"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -701,6 +702,14 @@ func ProvideImageStorageSettingService(
 	return NewImageStorageSettingService(settingRepo, encryptor, backup, factory, cfg.ImageStorage)
 }
 
+func ProvideGeneratedImageService(repo GeneratedImageRepository) *GeneratedImageService {
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/app/data"
+	}
+	return NewGeneratedImageService(repo, filepath.Join(dataDir, "generated-images"))
+}
+
 // ProvideImageTaskService 构造异步图片任务服务。
 //
 // 对象存储是异步图片任务的启用前提：仅当开关打开且凭证齐全时功能才可用，否则整体禁用
@@ -849,6 +858,7 @@ func ProvideAPIKeyService(
 
 // ProviderSet is the Wire provider set for all services
 var ProviderSet = wire.NewSet(
+	ProvideGeneratedImageService,
 	// Core services
 	ProvideAuthService,
 	NewPasskeyService,

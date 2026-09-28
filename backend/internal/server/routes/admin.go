@@ -94,6 +94,12 @@ func RegisterAdminRoutes(
 		// 使用记录管理
 		registerUsageRoutes(admin, h)
 
+		if h.Admin.GeneratedImage != nil {
+			admin.GET("/generated-images", h.Admin.GeneratedImage.List)
+			admin.GET("/generated-images/:id/content", h.Admin.GeneratedImage.Content)
+			admin.DELETE("/generated-images/:id", h.Admin.GeneratedImage.Delete)
+		}
+
 		// 用户属性管理
 		registerUserAttributeRoutes(admin, h)
 

@@ -27,6 +27,7 @@ func ProvideOpenAIGatewayService(
 	settingService *SettingService,
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 	history CodexTicketAttemptRepository,
+	generatedImages *GeneratedImageService,
 ) *OpenAIGatewayService {
 	s := NewOpenAIGatewayService(accountRepo, usageLogRepo, usageBillingRepo, userRepo,
 		userSubRepo, userGroupRateRepo, cache, cfg, schedulerSnapshot, concurrencyService,
@@ -34,6 +35,7 @@ func ProvideOpenAIGatewayService(
 		openAITokenProvider, grokTokenProvider, resolver, channelService, balanceNotifyService,
 		settingService, userPlatformQuotaRepo)
 	s.SetCodexTicketHistory(history)
+	s.SetGeneratedImageService(generatedImages)
 	s.StartOpenAICodexTicketHarvester()
 	return s
 }

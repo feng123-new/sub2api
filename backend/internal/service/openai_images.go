@@ -607,6 +607,10 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	if c != nil && account != nil {
+		c.Set(generatedImageAccountIDKey, account.ID)
+		c.Set(generatedImageModelKey, parsed.Model)
+	}
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
@@ -977,6 +981,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 		}
 	}
 	c.Data(resp.StatusCode, contentType, body)
+	s.captureGeneratedImage(c, account, parsed.Model, body, 0)
 
 	usage, _ := extractOpenAIUsageFromJSONBytes(body)
 	return usage, extractOpenAIImageCountFromJSONBytes(body), collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
@@ -1041,6 +1046,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 		mergeOpenAIUsage(&usage, dataBytes)
 		imageCounter.AddSSEData(dataBytes)
 		if direct == nil || string(dataBytes) == "[DONE]" {
+			s.captureGeneratedImage(c, nil, "", dataBytes, 0)
 			return
 		}
 		if directUsage, ok := codexDirectImagesUsage(dataBytes); ok {
@@ -1087,6 +1093,7 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 				lastDownstreamWriteAt = time.Now()
 			}
 		}
+		s.captureGeneratedImage(c, nil, direct.Model, dataBytes, 0)
 	}
 
 	flushSSEEvent := func() {

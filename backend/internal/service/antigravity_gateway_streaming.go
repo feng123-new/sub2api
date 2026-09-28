@@ -290,6 +290,7 @@ func (s *AntigravityGatewayService) handleGeminiStreamingResponse(c *gin.Context
 				}
 
 				cw.Fprintf("data: %s\n\n", payload)
+				captureGeneratedImageTo(s.generatedImageService, c, nil, "", []byte(payload), 0)
 				continue
 			}
 
@@ -521,6 +522,7 @@ returnResponse:
 		return nil, fmt.Errorf("failed to marshal response: %w", err)
 	}
 	c.Data(http.StatusOK, "application/json", respBody)
+	captureGeneratedImageTo(s.generatedImageService, c, nil, "", respBody, 0)
 
 	return &antigravityStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
 }

@@ -927,6 +927,9 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 							wroteDownstream,
 						)
 					}
+					if successfulGeneratedImageResponse(message) {
+						s.captureGeneratedImage(c, account, originalModel, message, turn)
+					}
 					if !isKeepalive {
 						wroteDownstream = true
 					}

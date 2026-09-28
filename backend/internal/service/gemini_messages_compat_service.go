@@ -66,6 +66,7 @@ type GeminiMessagesCompatService struct {
 	antigravityGatewayService *AntigravityGatewayService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
+	generatedImageService     generatedImageSubmitter
 }
 
 func (s *GeminiMessagesCompatService) readUpstreamErrorBody(resp *http.Response) []byte {
@@ -103,6 +104,10 @@ func NewGeminiMessagesCompatService(
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}
+}
+
+func (s *GeminiMessagesCompatService) SetGeneratedImageService(images *GeneratedImageService) {
+	s.generatedImageService = images
 }
 
 // GetTokenProvider returns the token provider for OAuth accounts
@@ -1161,6 +1166,7 @@ func isGeminiSignatureRelatedError(respBody []byte) bool {
 func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.Context, account *Account, originalModel string, action string, stream bool, body []byte) (*ForwardResult, error) {
 	beginUpstreamResponseModelObservation(c)
 	beginGeminiImageOutputObservation(c)
+	c.Set(generatedImageModelKey, originalModel)
 	startTime := time.Now()
 
 	if strings.TrimSpace(originalModel) == "" {
@@ -2734,6 +2740,9 @@ func (s *GeminiMessagesCompatService) handleNativeNonStreamingResponse(c *gin.Co
 		contentType = "application/json"
 	}
 	c.Data(resp.StatusCode, contentType, respBody)
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		captureGeneratedImageTo(s.generatedImageService, c, account, "", respBody, 0)
+	}
 
 	if u := extractGeminiUsage(respBody); u != nil {
 		return u, nil
@@ -2782,6 +2791,9 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 	var best geminiResponseSignal
 	sawDataEvent := false
 	fallback := &geminiSSEFallbackBody{}
+	var finalImagePayloads [][]byte
+	imagePayloadBytes := 0
+	const maxPendingImagesBytes = 64 << 20
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -2817,6 +2829,11 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 					}
 					observer.ObserveGemini(rawBytes)
 					observeGeminiImageOutputs(c, rawBytes)
+					if s.generatedImageService != nil && countGeminiInlineImageOutputs(rawBytes) > 0 &&
+						imagePayloadBytes+len(rawBytes) <= maxPendingImagesBytes {
+						finalImagePayloads = append(finalImagePayloads, append([]byte(nil), rawBytes...))
+						imagePayloadBytes += len(rawBytes)
+					}
 
 					if firstTokenMs == nil {
 						ms := int(time.Since(startTime).Milliseconds())
@@ -2850,6 +2867,11 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 	}
 
 	s.finalizeGeminiSSESignal(c, account, true, upstreamRequestID, best, sawDataEvent, fallback)
+	if best.Kind == geminiSignalNone {
+		for _, imagePayload := range finalImagePayloads {
+			captureGeneratedImageTo(s.generatedImageService, c, account, "", imagePayload, 0)
+		}
+	}
 
 	return &geminiNativeStreamResult{usage: usage, firstTokenMs: firstTokenMs}, nil
 }

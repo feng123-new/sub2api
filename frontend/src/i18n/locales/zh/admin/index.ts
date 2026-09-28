@@ -1,4 +1,5 @@
 import overview from './overview'
+import generatedImages from './generatedImages'
 import channels from './channels'
 import accounts from './accounts'
 import resources from './resources'
@@ -18,4 +19,5 @@ export default {
   ...audit,
   ...promptAudit,
   ...plugins,
+  ...generatedImages,
 }

@@ -696,6 +696,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				streamEarlyErr = newOpenAIResponsesEmptyCompletedFailoverError(c, account, upstreamRequestID)
 				return
 			}
+			if !suppressCurrentEvent && !sawFailedEvent && successfulGeneratedImageResponse(dataBytes) {
+				s.captureGeneratedImage(c, account, originalModel, dataBytes, 0)
+			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
@@ -1678,6 +1681,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
+	s.captureGeneratedImage(c, account, originalModel, body, 0)
 
 	return &openaiNonStreamingResult{
 		OpenAIUsage:      usage,
@@ -1784,6 +1788,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
+	}
+	if ok {
+		s.captureGeneratedImage(c, account, originalModel, body, 0)
 	}
 
 	return &openaiNonStreamingResult{

@@ -486,6 +486,7 @@ type OpenAIGatewayService struct {
 	balanceNotifyService  *BalanceNotifyService
 	settingService        *SettingService
 	userPlatformQuotaRepo UserPlatformQuotaRepository
+	generatedImageService generatedImageSubmitter
 	liveAttestation       liveattestation.Provider
 	liveAttestationCipher SecretEncryptor
 
@@ -620,6 +621,10 @@ func NewOpenAIGatewayService(
 // SetCodexTicketHistory must run before StartOpenAICodexTicketHarvester.
 func (s *OpenAIGatewayService) SetCodexTicketHistory(repo CodexTicketAttemptRepository) {
 	s.openaiCodexTicketHistory = repo
+}
+
+func (s *OpenAIGatewayService) SetGeneratedImageService(images *GeneratedImageService) {
+	s.generatedImageService = images
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）

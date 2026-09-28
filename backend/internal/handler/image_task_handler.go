@@ -229,6 +229,7 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		}
 	}()
 
+	service.DeferGeneratedImageCapture(taskCtx)
 	h.execute(platform, taskCtx)
 	body := bytes.TrimSpace(recorder.Body.Bytes())
 	if err := taskCtx.Request.Context().Err(); err != nil && len(body) == 0 {
@@ -246,6 +247,16 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		}
 		if err := h.tasks.Complete(context.Background(), taskID, statusCode, json.RawMessage(body)); err != nil {
 			logger.L().Error("image_task.complete_store_failed", zap.String("task_id", taskID), zap.Error(err))
+			return
+		}
+		// Complete can successfully persist a failed task when object storage rejects the image.
+		if h.openAI != nil && h.openAI.gatewayService != nil {
+			if key, ok := middleware2.GetAPIKeyFromContext(taskCtx); ok && key != nil {
+				owner := service.ImageTaskOwner{UserID: key.UserID, APIKeyID: key.ID}
+				if task, err := h.tasks.Get(context.Background(), owner, taskID); err == nil && task.Status == service.ImageTaskStatusCompleted {
+					h.openAI.gatewayService.CommitDeferredGeneratedImageCapture(taskCtx, body)
+				}
+			}
 		}
 		return
 	}

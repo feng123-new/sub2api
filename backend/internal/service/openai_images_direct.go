@@ -257,5 +257,6 @@ func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp 
 		}
 	}
 	c.Data(resp.StatusCode, contentType, body)
+	s.captureGeneratedImage(c, nil, parsed.Model, body, 0)
 	return usage, len(results), openAIResponsesImageResultSizes(results), nil
 }
