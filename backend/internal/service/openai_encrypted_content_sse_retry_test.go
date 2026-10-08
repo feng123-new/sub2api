@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -188,4 +189,110 @@ func TestEncryptedContentRecoveryDoesNotReplayBufferedNonStreamOutput(t *testing
 	_, err := runEncryptedRetryForward(t, false, "reasoning", u)
 	require.Error(t, err)
 	require.Len(t, u.bodies, 1)
+}
+
+func TestEncryptedContentBareErrorEOFRecovery(t *testing.T) {
+	bare := "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"invalid_encrypted_content\",\"message\":\"Encrypted content could not be decrypted or parsed.\",\"type\":\"invalid_request_error\"}}\n\n"
+	for _, stream := range []bool{true, false} {
+		for _, item := range []string{"reasoning", "compaction", "compaction_summary"} {
+			for _, unterminated := range []bool{true, false} {
+				t.Run(fmt.Sprintf("stream=%v/%s/unterminated=%v", stream, item, unterminated), func(t *testing.T) {
+					failed := bare
+					if unterminated {
+						failed = strings.TrimRight(failed, "\n")
+					}
+					u := &encryptedRetryUpstream{responses: []string{failed, encryptedRetryDelta + encryptedRetryCompleted}}
+					rec, err := runEncryptedRetryForward(t, stream, item, u)
+					require.NoError(t, err)
+					require.Len(t, u.bodies, 2)
+					require.NotContains(t, rec.Body.String(), "invalid_encrypted_content")
+					require.Contains(t, rec.Body.String(), "OK")
+				})
+			}
+		}
+	}
+}
+
+func TestEncryptedContentBareErrorEOFRecoveryBoundaries(t *testing.T) {
+	bare := "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"invalid_encrypted_content\",\"message\":\"bad ciphertext\"}}\n\n"
+	for _, stream := range []bool{true, false} {
+		for _, tc := range []struct {
+			name, item, body string
+			success          bool
+		}{
+			{"no encrypted input", "", bare, false},
+			{"after semantic output", "reasoning", encryptedRetryDelta + bare, false},
+			{"later success wins", "reasoning", bare + encryptedRetryCompleted, true},
+		} {
+			t.Run(fmt.Sprintf("stream=%v/%s", stream, tc.name), func(t *testing.T) {
+				u := &encryptedRetryUpstream{responses: []string{tc.body}}
+				_, err := runEncryptedRetryForward(t, stream, tc.item, u)
+				if tc.success {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+				require.Len(t, u.bodies, 1)
+			})
+		}
+	}
+}
+
+func TestEncryptedContentBareErrorTopLevelCode(t *testing.T) {
+	bare := "event: error\ndata: {\"type\":\"error\",\"code\":\"invalid_encrypted_content\",\"message\":\"bad ciphertext\"}\n\n"
+	for _, stream := range []bool{true, false} {
+		t.Run(fmt.Sprint(stream), func(t *testing.T) {
+			u := &encryptedRetryUpstream{responses: []string{bare, encryptedRetryDelta + encryptedRetryCompleted}}
+			rec, err := runEncryptedRetryForward(t, stream, "reasoning", u)
+			require.NoError(t, err)
+			require.Len(t, u.bodies, 2)
+			require.Contains(t, rec.Body.String(), "OK")
+		})
+	}
+}
+
+func TestEncryptedContentEOFDoesNotTreatTimersAsEOF(t *testing.T) {
+	for _, firstOutputTimer := range []bool{true, false} {
+		t.Run(fmt.Sprint(firstOutputTimer), func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Set(openAIEncryptedContentSSERetryKey, true)
+			cfg := &config.Config{}
+			if firstOutputTimer {
+				cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 1
+			} else {
+				cfg.Gateway.StreamDataIntervalTimeout = 1
+			}
+			svc := &OpenAIGatewayService{cfg: cfg}
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			expiry := time.AfterFunc(5*time.Second, func() { _ = writer.Close() })
+			defer expiry.Stop()
+			go func() {
+				_, _ = io.WriteString(writer, "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"invalid_encrypted_content\",\"message\":\"bad ciphertext\"}}\n\n")
+			}()
+			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader}
+			_, err := svc.handleStreamingResponse(context.Background(), resp, c, &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}, time.Now(), "gpt-6-astra", "gpt-6-astra")
+			require.Error(t, err)
+			var retry *openAIEncryptedContentSSERetry
+			require.NotErrorAs(t, err, &retry)
+			require.Contains(t, rec.Body.String(), "response.failed")
+		})
+	}
+}
+
+func TestEncryptedContentTerminalRetryRejectsCanceledAndOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(openAIEncryptedContentSSERetryKey, true)
+	payload := []byte(`{"type":"error","error":{"code":"invalid_encrypted_content"},"response":{"output":[{"type":"message"}]}}`)
+	require.Nil(t, newOpenAIEncryptedContentSSERetry(c, payload, "error", false))
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	cancel()
+	c.Request = c.Request.WithContext(ctx)
+	require.Nil(t, newOpenAIEncryptedContentSSERetry(c, []byte(`{"type":"error","error":{"code":"invalid_encrypted_content"}}`), "error", false))
 }

@@ -371,7 +371,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
 	}
-	finalizeStream := func() (*openaiStreamingResult, error) {
+	finalizeStream := func(allowBareErrorRecovery bool) (*openaiStreamingResult, error) {
 		if stageFirstOutput && eventInProgress {
 			// EOF dispatches the final SSE event even without a trailing blank line.
 			completeGuardedEvent(true)
@@ -381,6 +381,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			bareErrorAccountSideEffectsPending = false
 		}
 		if codexFailureTerminal && sawBareError && !sawResponseFailed && !clientDisconnected {
+			if allowBareErrorRecovery && ctx.Err() == nil {
+				if encryptedErr := newOpenAIEncryptedContentSSERetry(c, bareErrorPayload, "error", responsesSemanticOutputSeen); encryptedErr != nil {
+					return resultWithUsage(), encryptedErr
+				}
+			}
 			applyAttemptResponseHeaders()
 			if _, err := writePendingString(buildOpenAIResponseFailedSSE(responseID, originalModel, bareErrorPayload, failedMessage)); err != nil {
 				handlePendingWriteError(err)
@@ -441,7 +446,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				s.clearOpenAIProxyStreamDisconnect(account)
 				logger.LegacyPrintf("service.openai_gateway", "Upstream scan ended after terminal event: %v", scanErr)
 			}
-			result, err := finalizeStream()
+			result, err := finalizeStream(false)
 			return result, err, true
 		}
 		// 客户端断开/取消请求时，上游读取往往会返回 context canceled。
@@ -551,10 +556,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
 				if !outputStarted && !cyberHit {
-					if encryptedErr := newOpenAIEncryptedContentSSERetry(c, dataBytes, eventType, responsesSemanticOutputSeen); encryptedErr != nil {
-						sawFailedEvent = true
-						streamEarlyErr = encryptedErr
-						return
+					if eventType == "response.failed" {
+						if encryptedErr := newOpenAIEncryptedContentSSERetry(c, dataBytes, eventType, responsesSemanticOutputSeen); encryptedErr != nil {
+							sawFailedEvent = true
+							streamEarlyErr = encryptedErr
+							return
+						}
 					}
 					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
 						sawFailedEvent = true
@@ -820,13 +827,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			// Codex bare error 序列（error 后可能跟 response.failed 或翻盘的 completed）
 			// 必须继续读取，不适用提前结束。
 			if sawTerminalEvent && !eventInProgress && (!codexFailureTerminal || !sawBareError) {
-				return finalizeStream()
+				return finalizeStream(false)
 			}
 		}
 		if result, err, done := handleScanErr(documentScanner.Err()); done {
 			return result, err
 		}
-		return finalizeStream()
+		return finalizeStream(true)
 	}
 
 	type scanEvent struct {
@@ -890,7 +897,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					// line. Do not synthesize extra bytes on the downstream wire.
 					completeGuardedEvent(true)
 				}
-				return finalizeStream()
+				return finalizeStream(true)
 			}
 			if result, err, done := handleScanErr(ev.err); done {
 				markEventProcessed(ev)
@@ -908,7 +915,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			// 必须继续读取，不适用提前结束。
 			if sawTerminalEvent && !eventInProgress && (!codexFailureTerminal || !sawBareError) {
 				_ = resp.Body.Close()
-				return finalizeStream()
+				return finalizeStream(false)
 			}
 
 		case <-intervalCh:
@@ -921,7 +928,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed {
 				_ = resp.Body.Close()
-				return finalizeStream()
+				return finalizeStream(false)
 			}
 			if clientDisconnected {
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete after timeout")
@@ -951,7 +958,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed && len(events) == 0 {
 				_ = resp.Body.Close()
-				return finalizeStream()
+				return finalizeStream(false)
 			}
 			_ = resp.Body.Close()
 			for ev := range events {
