@@ -551,6 +551,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
 				if !outputStarted && !cyberHit {
+					if encryptedErr := newOpenAIEncryptedContentSSERetry(c, dataBytes, eventType, responsesSemanticOutputSeen); encryptedErr != nil {
+						sawFailedEvent = true
+						streamEarlyErr = encryptedErr
+						return
+					}
 					if compactErr := newOpenAICompactFallbackSignal(c, dataBytes, failedMessage); compactErr != nil {
 						sawFailedEvent = true
 						streamEarlyErr = compactErr
@@ -1718,6 +1723,9 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 	bodyText := string(body)
 	terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 	if terminalOK && (terminalType == "response.failed" || terminalType == "error") {
+		if encryptedErr := newOpenAIEncryptedContentSSERetry(c, terminalPayload, terminalType, openAIEncryptedRecoveryBodyHasOutput(bodyText)); encryptedErr != nil {
+			return nil, encryptedErr
+		}
 		msg := extractOpenAISSEErrorMessage(terminalPayload)
 		if msg == "" {
 			msg = "Upstream compact response failed"

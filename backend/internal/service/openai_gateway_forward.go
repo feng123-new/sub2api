@@ -1123,6 +1123,41 @@ func (s *OpenAIGatewayService) forward(
 	compactModelFallbackRetried := false
 	agentTaskRecoveryTried := false
 	rejectedFieldRetryState := openAIResponsesRejectedFieldRetryStateForRequest(c, body)
+	defer c.Set(openAIEncryptedContentSSERetryKey, false)
+	recoverHTTPEncryptedContent := func() (bool, error) {
+		if httpInvalidEncryptedContentRetryTried {
+			return false, nil
+		}
+		var decoded map[string]any
+		if err := decodeOpenAIJSONUseNumber(body, &decoded); err != nil {
+			return false, err
+		}
+		invalidDigests := collectOpenAIEncryptedContentDigestsRaw(body)
+		if !trimOpenAIEncryptedReasoningItems(decoded) {
+			return false, nil
+		}
+		retryBody, err := marshalOpenAIUpstreamJSON(decoded)
+		if err != nil {
+			return false, fmt.Errorf("serialize invalid_encrypted_content retry body: %w", err)
+		}
+		body = retryBody
+		requestView = newOpenAIRequestView(body)
+		reqBody = nil
+		bodyModified = false
+		httpInvalidEncryptedContentRetryTried = true
+		if len(invalidDigests) > 0 {
+			if lineageSessionHash == "" {
+				lineageSessionHash = s.GenerateSessionHash(c, lineageEntryBody)
+			}
+			s.markOpenAIWSInvalidEncryptedContentLineage(lineageGroupID, lineageSessionHash, invalidDigests)
+		}
+		if err := s.runOpenAIContextPreflightSilently(ctx, c, openAIContextPreflightEndpointResponses, body, upstreamModel); err != nil {
+			return false, err
+		}
+		rejectedFieldRetryState.remember(body)
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after invalid_encrypted_content (account: %s)", account.Name)
+		return true, nil
+	}
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
@@ -1200,28 +1235,9 @@ func (s *OpenAIGatewayService) forward(
 			respBody = s.redactAgentIdentitySensitiveBody(ctx, account, respBody)
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			if !httpInvalidEncryptedContentRetryTried && resp.StatusCode == http.StatusBadRequest && upstreamCode == "invalid_encrypted_content" {
-				decoded, decodeErr := ensureReqBody()
-				if decodeErr != nil {
-					return nil, decodeErr
-				}
-				invalidDigests := collectOpenAIEncryptedContentDigestsRaw(lineageEntryBody)
-				if trimOpenAIEncryptedReasoningItems(decoded) {
-					body, err = marshalOpenAIUpstreamJSON(decoded)
-					if err != nil {
-						return nil, fmt.Errorf("serialize invalid_encrypted_content retry body: %w", err)
-					}
-					if len(invalidDigests) > 0 {
-						if lineageSessionHash == "" {
-							lineageSessionHash = s.GenerateSessionHash(c, lineageEntryBody)
-						}
-						s.markOpenAIWSInvalidEncryptedContentLineage(lineageGroupID, lineageSessionHash, invalidDigests)
-					}
-					if err := s.runOpenAIContextPreflightSilently(ctx, c, openAIContextPreflightEndpointResponses, body, upstreamModel); err != nil {
-						return nil, err
-					}
-					httpInvalidEncryptedContentRetryTried = true
-					rejectedFieldRetryState.remember(body)
-					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying non-WSv2 request once after invalid_encrypted_content (account: %s)", account.Name)
+				if retry, retryErr := recoverHTTPEncryptedContent(); retryErr != nil {
+					return nil, retryErr
+				} else if retry {
 					continue
 				}
 				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Skip non-WSv2 invalid_encrypted_content retry because encrypted reasoning items are missing (account: %s)", account.Name)
@@ -1303,6 +1319,7 @@ func (s *OpenAIGatewayService) forward(
 		}
 
 		serviceTier := extractOpenAIServiceTierFromBody(body)
+		c.Set(openAIEncryptedContentSSERetryKey, !httpInvalidEncryptedContentRetryTried && len(collectOpenAIEncryptedContentDigestsRaw(body)) > 0)
 		// 上游接受后只保留计费需要的标量，避免响应处理期间继续保活完整 input/tools map。
 		reqBody = nil
 
@@ -1315,6 +1332,18 @@ func (s *OpenAIGatewayService) forward(
 		var imageOutputSizes []string
 		if reqStream {
 			streamResult, err := s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			var encryptedErr *openAIEncryptedContentSSERetry
+			if errors.As(err, &encryptedErr) {
+				_ = resp.Body.Close()
+				if retry, retryErr := recoverHTTPEncryptedContent(); retryErr != nil {
+					return nil, retryErr
+				} else if retry {
+					continue
+				}
+				c.Set(openAIEncryptedContentSSERetryKey, false)
+				encryptedErr.restoreResponse(resp)
+				streamResult, err = s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			}
 			if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
@@ -1363,6 +1392,18 @@ func (s *OpenAIGatewayService) forward(
 			searchCount = streamResult.searchCount
 		} else {
 			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
+			var encryptedErr *openAIEncryptedContentSSERetry
+			if errors.As(err, &encryptedErr) {
+				_ = resp.Body.Close()
+				if retry, retryErr := recoverHTTPEncryptedContent(); retryErr != nil {
+					return nil, retryErr
+				} else if retry {
+					continue
+				}
+				c.Set(openAIEncryptedContentSSERetryKey, false)
+				encryptedErr.restoreResponse(resp)
+				nonStreamResult, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
+			}
 			if err != nil {
 				if signal, ok := asOpenAICompactFallbackSignal(err); ok {
 					if retryBody, fallbackModel, retry := s.prepareOpenAICompactFallbackRetry(
