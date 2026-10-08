@@ -5,6 +5,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -901,6 +902,7 @@ func TestAPIContracts(t *testing.T) {
 					"min_claude_code_version": "",
 					"max_claude_code_version": "",
 					"openai_codex_ticket_enabled": false,
+					"openai_codex_ticket_allow_without_ticket": true,
 					"openai_codex_ticket_harvest_proxy_url": "",
 					"openai_codex_ticket_harvest_proxy_configured": false,
 					"min_codex_version": "",
@@ -1240,6 +1242,7 @@ func TestAPIContracts(t *testing.T) {
 					"enable_client_dateline_normalization": true,
 					"antigravity_user_agent_version": "",
 					"openai_codex_ticket_enabled": false,
+					"openai_codex_ticket_allow_without_ticket": true,
 					"openai_codex_ticket_harvest_proxy_url": "",
 					"openai_codex_ticket_harvest_proxy_configured": false,
 					"min_codex_version": "",
@@ -1434,6 +1437,43 @@ func TestAPIContracts(t *testing.T) {
 			status, body := doRequest(t, deps.router, tt.method, tt.path, tt.body, tt.headers)
 			require.Equal(t, tt.wantStatus, status)
 			require.JSONEq(t, tt.wantJSON, body)
+		})
+	}
+}
+
+func TestAdminSettingsCodexTicketFalseRemainsPresent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, tt := range []struct {
+		name       string
+		failClosed bool
+		settings   map[string]string
+	}{
+		{name: "config fallback", failClosed: true},
+		{
+			name: "persisted false overrides config",
+			settings: map[string]string{
+				"openai_codex_ticket_allow_without_ticket": "false",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := newContractDeps(t)
+			deps.cfg.Gateway.OpenAICodexTicket.FailClosed = tt.failClosed
+			if tt.settings != nil {
+				deps.settingRepo.SetAll(tt.settings)
+			}
+
+			status, body := doRequest(t, deps.router, http.MethodGet, "/api/v1/admin/settings", "", nil)
+			require.Equal(t, http.StatusOK, status)
+			var response struct {
+				Data struct {
+					AllowWithoutTicket *bool `json:"openai_codex_ticket_allow_without_ticket"`
+				} `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(body), &response))
+			require.NotNil(t, response.Data.AllowWithoutTicket)
+			require.False(t, *response.Data.AllowWithoutTicket)
 		})
 	}
 }

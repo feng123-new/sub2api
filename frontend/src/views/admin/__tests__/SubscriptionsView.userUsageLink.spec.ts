@@ -25,7 +25,8 @@ vi.mock('@/api/admin', () => ({
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
-    showSuccess: vi.fn()
+    showSuccess: vi.fn(),
+    fetchPublicSettings: vi.fn().mockResolvedValue(null)
   })
 }))
 
