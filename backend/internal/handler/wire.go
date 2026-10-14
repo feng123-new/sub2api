@@ -121,6 +121,7 @@ func ProvideGatewayHandler(
 	settingService *service.SettingService,
 	coordinator *securityaudit.Coordinator,
 	generatedImages *service.GeneratedImageService,
+	geminiCachedContentService *service.GeminiCachedContentService,
 ) *GatewayHandler {
 	geminiCompatService.SetGeneratedImageService(generatedImages)
 	antigravityGatewayService.SetGeneratedImageService(generatedImages)
@@ -128,6 +129,7 @@ func ProvideGatewayHandler(
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)
 	h.securityAuditCoordinator = coordinator
+	h.geminiCachedContentService = geminiCachedContentService
 	return h
 }
 
