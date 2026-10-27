@@ -35,6 +35,9 @@ func TestQueryUsageCodexCredits(t *testing.T) {
 				require.Equal(t, http.MethodGet, r.Method)
 				require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 				require.Equal(t, "test-workspace", r.Header.Get("ChatGPT-Account-ID"))
+				require.Equal(t, OpenAIOutboundTimezone, r.Header.Get("X-Timezone"))
+				require.Equal(t, openaiQuotaCodexOriginator, r.Header.Get("Originator"))
+				require.Equal(t, openaiQuotaCodexLanguageTag, r.Header.Get("Oai-Language"))
 				w.Header().Set("Content-Type", "application/json")
 				if r.URL.Path == "/backend-api/wham/usage" {
 					_, _ = w.Write([]byte(tc.body))

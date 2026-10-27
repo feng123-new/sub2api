@@ -606,6 +606,7 @@ func buildCodexCommonHeaders(accessToken, chatGPTAccountID string, fedRAMP bool)
 		"chatgpt-account-id": chatGPTAccountID,
 		"openai-beta":        openaiQuotaCodexBeta,
 		"oai-language":       openaiQuotaCodexLanguageTag,
+		"x-timezone":         OpenAIOutboundTimezone,
 		"originator":         openaiQuotaCodexOriginator,
 		"accept":             "application/json",
 		"sec-fetch-site":     openaiQuotaSecFetchSite,

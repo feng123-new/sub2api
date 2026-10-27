@@ -202,6 +202,9 @@ func TestResetCreditTargetedSendsStableCreditAndRedeemIDs(t *testing.T) {
 	var body map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/backend-api/wham/rate-limit-reset-credits/consume", r.URL.Path)
+		require.Equal(t, OpenAIOutboundTimezone, r.Header.Get("X-Timezone"))
+		require.Equal(t, openaiQuotaCodexOriginator, r.Header.Get("Originator"))
+		require.Equal(t, openaiQuotaCodexLanguageTag, r.Header.Get("Oai-Language"))
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"code":"ok","windows_reset":1}`))
