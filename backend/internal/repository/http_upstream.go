@@ -163,10 +163,11 @@ type openAIHTTP2FallbackState struct {
 // 7. 代理变更时清空旧连接池，避免复用错误代理
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
-	cfg       *config.Config // 全局配置
-	codexRust *codexRustTransport
-	mu        sync.RWMutex                    // 保护 clients map 的读写锁
-	clients   map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
+	cfg               *config.Config // 全局配置
+	codexRust         *codexRustTransport
+	codexRustSettings *service.SettingService
+	mu                sync.RWMutex                    // 保护 clients map 的读写锁
+	clients           map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
 }
@@ -182,9 +183,21 @@ type httpUpstreamService struct {
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 	return &httpUpstreamService{
 		cfg:       cfg,
-		codexRust: newCodexRustTransport(cfg),
+		codexRust: newCodexRustTransport(cfg, false),
 		clients:   make(map[string]*upstreamClientEntry),
 	}
+}
+
+// ProvideHTTPUpstream wires the persisted admin transport switch into the
+// gateway. The Rust socket client is idle until an explicitly selected route
+// is used. NewHTTPUpstream remains the legacy canary-only constructor.
+func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService) service.HTTPUpstream {
+	upstream := NewHTTPUpstream(cfg).(*httpUpstreamService)
+	upstream.codexRustSettings = settings
+	if upstream.codexRust == nil {
+		upstream.codexRust = newCodexRustTransport(cfg, true)
+	}
+	return upstream
 }
 
 // Do 执行 HTTP 请求

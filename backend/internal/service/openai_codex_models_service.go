@@ -1948,6 +1948,7 @@ func (s *OpenAIGatewayService) fetchOpenAIModelsUpstream(ctx context.Context, re
 		resp, err = s.httpUpstream.Do(req, request.proxyURL, request.accountID, request.accountConcurrency)
 	} else {
 		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+		req = MarkOpenAICodexOAuthRequest(req, request.credentialAccount)
 		if useOpenAICodexRustTransport(s.httpUpstream, req, request.credentialAccount) {
 			resp, err = s.httpUpstream.Do(req, request.proxyURL, request.accountID, request.accountConcurrency)
 		} else {

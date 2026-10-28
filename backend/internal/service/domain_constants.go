@@ -710,7 +710,10 @@ const (
 	// SettingKeyOpenAICodexTicketEnabled Codex 292 打票总开关（后台可改、热更新）。
 	// 关闭：不打票、不注入 x-codex-turn-state，按原链路转发。
 	// 开启：后台打票并在业务请求中覆盖该头。
-	SettingKeyOpenAICodexTicketEnabled            = "openai_codex_ticket_enabled"
+	SettingKeyOpenAICodexTicketEnabled = "openai_codex_ticket_enabled"
+	// SettingKeyOpenAICodexTransportMode is the admin-controlled HTTP/SSE transport.
+	// "go" explicitly disables the legacy Rust canary; "rust" selects all Codex OAuth accounts.
+	SettingKeyOpenAICodexTransportMode            = "openai_codex_transport_mode"
 	SettingKeyOpenAICodexTicketAllowWithoutTicket = "openai_codex_ticket_allow_without_ticket"
 	// SettingKeyOpenAICodexTicketHarvestProxyURL Codex 292 打票出口（socks5h/http），后台可改、热更新。
 	SettingKeyOpenAICodexTicketHarvestProxyURL = "openai_codex_ticket_harvest_proxy_url"

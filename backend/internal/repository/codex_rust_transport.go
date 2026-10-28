@@ -24,8 +24,8 @@ type codexRustTransport struct {
 	accountIDs map[int64]struct{}
 }
 
-func newCodexRustTransport(cfg *config.Config) *codexRustTransport {
-	if cfg == nil || !cfg.Gateway.OpenAICodexRustTransport.Enabled {
+func newCodexRustTransport(cfg *config.Config, allowAdminToggle bool) *codexRustTransport {
+	if cfg == nil || (!cfg.Gateway.OpenAICodexRustTransport.Enabled && !allowAdminToggle) {
 		return nil
 	}
 	settings := cfg.Gateway.OpenAICodexRustTransport
@@ -38,7 +38,7 @@ func newCodexRustTransport(cfg *config.Config) *codexRustTransport {
 	}
 	// An explicit account allowlist is mandatory. Enabling the flag alone
 	// must never redirect the entire production workload.
-	if len(accounts) == 0 {
+	if len(accounts) == 0 && !allowAdminToggle {
 		return nil
 	}
 	socket := strings.TrimSpace(settings.SocketPath)
@@ -66,10 +66,21 @@ func (s *httpUpstreamService) shouldUseCodexRust(req *http.Request, accountID in
 	if s == nil || s.codexRust == nil || req == nil || req.URL == nil || profile != service.HTTPUpstreamProfileOpenAI {
 		return false
 	}
+	if !codexRustTargetURL(req.URL.String()) {
+		return false
+	}
+	if s.codexRustSettings != nil {
+		switch s.codexRustSettings.GetCodexTransportMode(req.Context()) {
+		case service.CodexTransportGo:
+			return false
+		case service.CodexTransportRust:
+			return accountID > 0 && service.IsOpenAICodexOAuthRequest(req.Context())
+		}
+	}
 	if _, ok := s.codexRust.accountIDs[accountID]; !ok {
 		return false
 	}
-	return codexRustTargetURL(req.URL.String())
+	return true
 }
 
 // UseCodexRustFor lets the OAuth service skip its optional outbound plugin for

@@ -1593,7 +1593,28 @@ export async function resetWebSearchUsage(payload: {
   );
 }
 
+export interface CodexTransportStatus {
+  mode: "go" | "rust"
+  available: boolean
+  legacy_canary: boolean
+  scope: "openai_oauth_http_sse"
+  websocket_route: "go"
+}
+
+/** Change the transport used by future Codex OAuth HTTP/SSE requests. */
+export async function getCodexTransport(): Promise<CodexTransportStatus> {
+  const { data } = await apiClient.get<CodexTransportStatus>("/admin/settings/codex-transport")
+  return data
+}
+
+export async function updateCodexTransport(mode: "go" | "rust"): Promise<CodexTransportStatus> {
+  const { data } = await apiClient.put<CodexTransportStatus>("/admin/settings/codex-transport", { mode })
+  return data
+}
+
 export const settingsAPI = {
+	getCodexTransport,
+	updateCodexTransport,
   getSettings,
   updateSettings,
   testSmtpConnection,

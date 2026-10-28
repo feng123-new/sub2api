@@ -67,6 +67,53 @@ func TestCodexRustTransportStrictCanaryRouting(t *testing.T) {
 	}
 }
 
+type codexModeRepository struct {
+	service.SettingRepository
+	mode string
+}
+
+func (r *codexModeRepository) GetValue(_ context.Context, key string) (string, error) {
+	if key == service.SettingKeyOpenAICodexTransportMode {
+		return r.mode, nil
+	}
+	return "", service.ErrSettingNotFound
+}
+
+func (r *codexModeRepository) Set(_ context.Context, key, value string) error {
+	if key == service.SettingKeyOpenAICodexTransportMode {
+		r.mode = value
+	}
+	return nil
+}
+
+func TestCodexRustAdminSwitchAppliesToOAuthOnlyAndOverridesCanary(t *testing.T) {
+	cfg := testCodexRustConfig("/tmp/rust-transport-test.sock", "42")
+	repo := &codexModeRepository{mode: service.CodexTransportRust}
+	settings := service.NewSettingService(repo, cfg)
+	upstream := ProvideHTTPUpstream(cfg, settings).(*httpUpstreamService)
+	req := testCodexRustRequest(t)
+	if upstream.shouldUseCodexRust(req, 42, service.HTTPUpstreamProfileOpenAI) {
+		t.Fatal("unmarked requests must not use global Rust mode")
+	}
+	apiKeyReq := service.MarkOpenAICodexOAuthRequest(req, &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey})
+	if upstream.shouldUseCodexRust(apiKeyReq, 42, service.HTTPUpstreamProfileOpenAI) {
+		t.Fatal("API key requests must stay on Go")
+	}
+	oauthReq := service.MarkOpenAICodexOAuthRequest(req, &service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth})
+	if !upstream.shouldUseCodexRust(oauthReq, 999, service.HTTPUpstreamProfileOpenAI) {
+		t.Fatal("global Rust mode must cover new OAuth accounts without editing allowlists")
+	}
+	if upstream.shouldUseCodexRust(oauthReq, 999, service.HTTPUpstreamProfileOpenAIHarvest) {
+		t.Fatal("ticket harvesting must stay on Go")
+	}
+	if err := settings.SetCodexTransportMode(context.Background(), service.CodexTransportGo); err != nil {
+		t.Fatal(err)
+	}
+	if upstream.shouldUseCodexRust(oauthReq, 42, service.HTTPUpstreamProfileOpenAI) {
+		t.Fatal("explicit Go setting must override the legacy canary")
+	}
+}
+
 func TestCodexRustTransportUnixStreaming(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket integration requires Unix")

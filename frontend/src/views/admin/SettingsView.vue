@@ -4502,6 +4502,37 @@
               </h2>
             </div>
             <div class="p-6 space-y-4">
+                <div class="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+                  <div class="min-w-0 flex-1">
+                    <h3 class="text-base font-semibold text-gray-900 dark:text-white">
+                      {{ localText('Codex 上游传输模式', 'Codex upstream transport') }}
+                      <span class="ml-2 rounded bg-gray-100 px-2 py-0.5 text-xs font-medium dark:bg-dark-700">
+                        {{ codexTransportStatus?.mode === 'rust' ? 'Rust' : 'Go' }}
+                      </span>
+                    </h3>
+                    <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {{ localText('开启：所有 Codex OAuth 账号的 HTTP/SSE 请求使用 Rust；关闭：使用默认 Go 传输。切换只影响新请求。WebSocket 仍由 Go 处理。', 'On: Rust for all Codex OAuth HTTP/SSE requests. Off: default Go transport. Only new requests are affected; WebSocket remains on Go.') }}
+                    </p>
+                    <p class="mt-1 text-xs" :class="codexTransportStatus?.available ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'">
+                      {{ codexTransportLoading ? localText('正在检查 Rust sidecar…', 'Checking Rust sidecar…') : codexTransportStatus?.available ? localText('Rust sidecar 已连接', 'Rust sidecar connected') : localText('Rust sidecar 不可用，无法开启 Rust', 'Rust sidecar unavailable; cannot enable Rust') }}
+                    </p>
+                    <p v-if="codexTransportStatus?.legacy_canary" class="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                      {{ localText('旧环境变量灰度仍在生效；切换此开关将覆盖旧灰度设置。', 'Legacy environment canary is active; using this switch overrides it.') }}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    :aria-label="localText('切换 Codex Rust 传输', 'Toggle Codex Rust transport')"
+                    :aria-checked="codexTransportStatus?.mode === 'rust'"
+                    :disabled="codexTransportLoading || codexTransportSaving || !codexTransportStatus || (codexTransportStatus.mode !== 'rust' && !codexTransportStatus.available)"
+                    class="relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    :class="codexTransportStatus?.mode === 'rust' ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'"
+                    @click="toggleCodexTransport"
+                  >
+                    <span class="inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform" :class="codexTransportStatus?.mode === 'rust' ? 'translate-x-5' : 'translate-x-0'" />
+                  </button>
+                </div>
                 <div class="flex items-center justify-between gap-4">
                   <div class="min-w-0">
                     <h3 class="text-base font-semibold text-gray-900 dark:text-white">
@@ -9025,6 +9056,7 @@ import type {
   WebSearchEmulationConfig,
   WebSearchProviderConfig,
   WebSearchTestResult,
+  CodexTransportStatus,
 } from "@/api/admin/settings";
 import type {
   AdminGroup,
@@ -9094,6 +9126,38 @@ const appStore = useAppStore();
 const settingsStepUp = useStepUp();
 const adminSettingsStore = useAdminSettingsStore();
 const isZhLocale = computed(() => locale.value.startsWith("zh"));
+
+const codexTransportStatus = ref<CodexTransportStatus | null>(null);
+const codexTransportLoading = ref(true);
+const codexTransportSaving = ref(false);
+
+async function loadCodexTransportStatus() {
+  codexTransportLoading.value = true;
+  try {
+    codexTransportStatus.value = await adminAPI.settings.getCodexTransport();
+  } catch (err: unknown) {
+    codexTransportStatus.value = null;
+    appStore.showError(extractApiErrorMessage(err, localText('读取 Codex 传输模式失败', 'Failed to load Codex transport mode')));
+  } finally {
+    codexTransportLoading.value = false;
+  }
+}
+
+async function toggleCodexTransport() {
+  if (!codexTransportStatus.value || codexTransportSaving.value || codexTransportLoading.value) return;
+  const nextMode = codexTransportStatus.value.mode === 'rust' ? 'go' : 'rust';
+  if (nextMode === 'rust' && !codexTransportStatus.value.available) return;
+  codexTransportSaving.value = true;
+  try {
+    codexTransportStatus.value = await adminAPI.settings.updateCodexTransport(nextMode);
+    appStore.showSuccess(localText(nextMode === 'rust' ? 'Codex 已切换到 Rust（HTTP/SSE）' : 'Codex 已切换到 Go', nextMode === 'rust' ? 'Codex HTTP/SSE now uses Rust' : 'Codex now uses Go'));
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, localText('切换传输模式失败', 'Failed to change transport mode')));
+    await loadCodexTransportStatus();
+  } finally {
+    codexTransportSaving.value = false;
+  }
+}
 
 function localText(zh: string, en: string): string {
   return isZhLocale.value ? zh : en;
@@ -12947,6 +13011,7 @@ async function handleDeleteProvider() {
 
 onMounted(() => {
   loadSettings();
+  loadCodexTransportStatus();
   loadSubscriptionGroups();
   loadAdminApiKey();
   loadUpstreamBillingProbeSettings();
