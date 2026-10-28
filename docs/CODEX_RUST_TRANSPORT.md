@@ -2,7 +2,7 @@
 
 这是一个**默认关闭**的出站传输试验。Sub2API 的账号、OAuth Token 生命周期、负载调度、SSE 解析及计费仍由 Go 处理；只有明确列入灰度名单的 Codex HTTPS 请求通过共享 Unix socket 交由 Rust 进程建立真实的上游网络连接。
 
-Rust 使用与 Codex 项目相同的主要 HTTP 库组合（`reqwest 0.12`、系统 TLS/OpenSSL、可选 `rustls`、`hyper`）。默认使用 `CODEX_RUST_TLS_BACKEND=native`（Linux 下系统 TLS）；可设为 `rustls` 回滚。官方 Codex 默认使用系统 TLS 后端，发生特定协商失败后才可能切换到 rustls；本 sidecar 不会在可能已发送请求时自动重放。依赖相同不保证 JA3/JA4、ALPN、HTTP/2 帧参数、代理链路或上游看到的全部请求字段完全一致。
+Rust 使用与 Codex 项目相同的主要 HTTP 库组合（`reqwest 0.12`、系统 TLS/OpenSSL、可选 `rustls`、`hyper`）。默认使用 `CODEX_RUST_TLS_BACKEND=native`（Linux 下系统 TLS），并启用 reqwest 的 `native-tls-alpn`，以便与支持 HTTP/2 的服务端协商 `h2`；可设为 `rustls` 回滚。官方 Codex 默认使用系统 TLS 后端，发生特定协商失败后才可能切换到 rustls；本 sidecar 不会在可能已发送请求时自动重放。依赖相同不保证 JA3/JA4、ALPN、HTTP/2 帧参数、代理链路或上游看到的全部请求字段完全一致。
 
 ## 路由范围与回滚
 

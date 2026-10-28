@@ -11,5 +11,5 @@ futures-util = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-reqwest = { version = "0.12", default-features = false, features = ["http2", "native-tls", "rustls-tls-native-roots", "stream", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["http2", "native-tls-alpn", "rustls-tls-native-roots", "stream", "socks"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
