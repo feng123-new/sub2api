@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,9 @@ func TestCodexRustTransportUnixStreaming(t *testing.T) {
 			r.Header.Get("X-Codex-Rust-Proxy") != "http://proxy.example:8080" ||
 			r.Header.Get("Authorization") != "Bearer fake-token" {
 			t.Errorf("internal metadata was not preserved correctly")
+		}
+		if got, want := r.Header.Get("X-Codex-Rust-Body-Length"), strconv.Itoa(len(`{"model":"test"}`)); got != want {
+			t.Errorf("known JSON body length not preserved: got %q, want %q", got, want)
 		}
 		if r.Header.Get("X-Codex-Rust-Bogus") != "" {
 			t.Errorf("untrusted control header leaked to Rust")

@@ -160,5 +160,8 @@ issues/
 
 # Vitest / Vite cache at repo root
 .vite/
+# Local Rust and Python diagnostic build artifacts
+codex-transport-rs/target/
+tools/__pycache__/
 # 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
 /plugins/

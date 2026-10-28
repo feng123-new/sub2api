@@ -2,7 +2,7 @@
 
 这是一个**默认关闭**的出站传输试验。Sub2API 的账号、OAuth Token 生命周期、负载调度、SSE 解析及计费仍由 Go 处理；只有明确列入灰度名单的 Codex HTTPS 请求通过共享 Unix socket 交由 Rust 进程建立真实的上游网络连接。
 
-Rust 使用与 Codex 项目相同的主要 HTTP 库组合（`reqwest 0.12`、`rustls`、`hyper`）。依赖相同不保证 JA3/JA4、ALPN、HTTP/2 帧参数、代理链路或上游看到的全部请求字段完全一致。请用可控的测试端点实测 TLS/HTTP 行为，不要把这项改造描述为官方客户端身份验证。
+Rust 使用与 Codex 项目相同的主要 HTTP 库组合（`reqwest 0.12`、系统 TLS/OpenSSL、可选 `rustls`、`hyper`）。默认使用 `CODEX_RUST_TLS_BACKEND=native`（Linux 下系统 TLS）；可设为 `rustls` 回滚。官方 Codex 默认使用系统 TLS 后端，发生特定协商失败后才可能切换到 rustls；本 sidecar 不会在可能已发送请求时自动重放。依赖相同不保证 JA3/JA4、ALPN、HTTP/2 帧参数、代理链路或上游看到的全部请求字段完全一致。
 
 ## 路由范围与回滚
 
@@ -11,6 +11,7 @@ Rust 使用与 Codex 项目相同的主要 HTTP 库组合（`reqwest 0.12`、`ru
 - 目标固定为 `https://chatgpt.com/backend-api/codex/...`，其它 Provider、API Key 平台地址、OpenAI Harvest 和 WebSocket 仍走原有 Go 路径。
 - 命中白名单的 OAuth HTTP/SSE 请求优先走 Rust，即使 OAuth outbound 插件正在灰度；未命中的账号仍沿用原有插件。Codex models GET 探测也遵循这一选择。
 - Rust 不自动重试已发送的请求，也不跟随 HTTP 重定向。连接异常在 Go 侧标记为可能已发送，以阻止重复执行。
+- Go 通过仅供 IPC 使用的控制头传递已知的 JSON Content-Length，Rust 在上游 POST 中保留该长度；未知长度的流式请求不伪造长度。控制头本身不会发送到上游。
 - **即时回滚：**将 `GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ENABLED=false` 或清空账号列表，重建/重启 Sub2API 容器。Rust sidecar 可以继续运行，不会影响未命中的流量。
 
 ## Docker Compose 开发部署
@@ -24,6 +25,8 @@ docker compose --profile codex-rust ps codex-transport-rs
 ```
 
 Rust 服务不映射任何公网端口；只通过 `codex_rust_socket` 挂载的 Unix socket 与 Go 进程交互。Rust 进程收到的目标 URL 仍会被严格限制到 Codex HTTPS 路径，`Proxy-URL` 原样传给 reqwest 的代理实现。请保持 Unix socket 目录仅对可信容器可见。
+
+只读 TLS ClientHello 对照可使用 `tools/codex_tls_probe_proxy.py`：在受控主机/容器网络启动临时 HTTP CONNECT 捕获代理，然后用虚拟账号 ID 及无效 Bearer Token 指向这个测试代理。它只接受到 `chatgpt.com:443` 的 CONNECT，解析 ClientHello 的 ALPN、密码套件、扩展顺序、supported groups 和 JA3 后立刻结束，绝不转发上游流量或查看实际请求。跨 Windows 和 Linux 的结果只能作为平台差异参考；JA3 对 TLS 扩展顺序敏感，不能作为单一兼容性判据。
 
 可使用 `codex-transport-rs/smoke.mjs` 对运行中的 socket 执行不含凭据、不访问外网的 `/health` 和不安全目标拒绝测试。追加 `--upstream-probe` 后，会使用**故意无效**的 Bearer Token 向 Codex models 发出一次 HTTPS GET；测试只核对是否到达上游及返回的 HTTP 协议，401 等鉴权失败属于预期。需在有 Node.js 且能挂载该 socket 的容器中执行，不要把真实账号 Token 写进测试参数或日志。
 

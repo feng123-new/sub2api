@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 FROM rust:1.92-alpine AS builder
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev pkgconf openssl-dev openssl-libs-static
 ENV CARGO_BUILD_JOBS=2
 WORKDIR /src
 COPY codex-transport-rs/Cargo.toml codex-transport-rs/Cargo.lock ./
@@ -9,7 +9,7 @@ RUN cargo build --locked --release
 RUN cargo test --locked --release
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates openssl
 COPY --from=builder /src/target/release/sub2api-codex-transport /usr/local/bin/sub2api-codex-transport
 ENV CODEX_RUST_SOCKET=/run/codex-rust/transport.sock
 ENTRYPOINT ["/usr/local/bin/sub2api-codex-transport"]

@@ -29,9 +29,31 @@ struct CachedClient {
     last_used: Instant,
 }
 
+#[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
+enum TlsBackend {
+    #[default]
+    Native,
+    Rustls,
+}
+
+impl TlsBackend {
+    fn from_env() -> std::io::Result<Self> {
+        match std::env::var("CODEX_RUST_TLS_BACKEND") {
+            Ok(value) if value == "native" => Ok(Self::Native),
+            Ok(value) if value == "rustls" => Ok(Self::Rustls),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Native),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "CODEX_RUST_TLS_BACKEND must be native or rustls",
+            )),
+        }
+    }
+}
+
 #[derive(Default)]
 struct AppState {
     clients: Mutex<HashMap<(u64, String), CachedClient>>,
+    tls_backend: TlsBackend,
 }
 
 impl AppState {
@@ -55,10 +77,14 @@ impl AppState {
             }
         }
 
-        // Match the official Codex HTTP stack (reqwest + rustls). HTTPS ALPN
-        // negotiates HTTP/2 when supported; no speculative POST retry.
-        let mut builder = Client::builder()
-            .use_rustls_tls()
+        // Official Codex uses reqwest's platform TLS by default and has a
+        // narrow rustls fallback. Preserve an explicit selection for probes;
+        // do not replay streamed requests after handshake failures.
+        let builder = match self.tls_backend {
+            TlsBackend::Native => Client::builder().use_native_tls(),
+            TlsBackend::Rustls => Client::builder().use_rustls_tls(),
+        };
+        let mut builder = builder
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .pool_idle_timeout(Duration::from_secs(90))
@@ -200,6 +226,15 @@ async fn forward(req: Request<Incoming>, state: Arc<AppState>) -> Response<Body>
             upstream = upstream.header(name, value);
         }
     }
+    // Go can know an exact JSON body length even though the IPC hop is
+    // streaming. Preserve it upstream, as the official Codex JSON sender does.
+    if !is_get {
+        if let Some(body_length) = control_header(headers, "x-codex-rust-body-length")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            upstream = upstream.header(hyper::header::CONTENT_LENGTH, body_length);
+        }
+    }
     // GET requests have no upstream body. This also avoids sending a spurious
     // chunked transfer/body on HTTP/1.1 model-catalog requests.
     // POST uploads remain streamed without buffering in either process.
@@ -257,7 +292,10 @@ async fn main() -> std::io::Result<()> {
     }
     let listener = UnixListener::bind(socket_path)?;
     fs::set_permissions(socket_path, fs::Permissions::from_mode(0o600))?;
-    let state = Arc::new(AppState::default());
+    let state = Arc::new(AppState {
+        tls_backend: TlsBackend::from_env()?,
+        ..Default::default()
+    });
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {

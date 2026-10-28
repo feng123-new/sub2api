@@ -107,6 +107,9 @@ func (s *httpUpstreamService) doCodexRust(req *http.Request, proxyURL string, ac
 	localReq.Header.Set("X-Codex-Rust-Target", req.URL.String())
 	localReq.Header.Set("X-Codex-Rust-Method", req.Method)
 	localReq.Header.Set("X-Codex-Rust-Account", strconv.FormatInt(accountID, 10))
+	if req.Method == http.MethodPost && req.ContentLength >= 0 {
+		localReq.Header.Set("X-Codex-Rust-Body-Length", strconv.FormatInt(req.ContentLength, 10))
+	}
 	if proxyURL != "" {
 		localReq.Header.Set("X-Codex-Rust-Proxy", proxyURL)
 	}
