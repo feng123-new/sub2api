@@ -12,6 +12,30 @@
 # =============================================================================
 
 services:
+  # The Rust helper is opt-in and has no public TCP listener. Start it with
+  # `docker compose --profile codex-rust up -d codex-transport-rs`.
+  codex-transport-rs:
+    profiles: ["codex-rust"]
+    build:
+      context: ..
+      dockerfile: codex-transport-rs/Dockerfile
+    image: sub2api-codex-transport-rs:0.1.0
+    restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 64
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - codex_rust_socket:/run/codex-rust
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/codex-rust/transport.sock"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
   # ===========================================================================
   # Sub2API Application
   # ===========================================================================
@@ -30,6 +54,7 @@ services:
     volumes:
       # Data persistence (config.yaml will be auto-generated here)
       - sub2api_data:/app/data
+      - codex_rust_socket:/run/codex-rust
       # Optional: Mount custom config.yaml (uncomment and create the file first)
       # Copy config.example.yaml to config.yaml, modify it, then uncomment:
       # - ./config.yaml:/app/data/config.yaml
@@ -202,6 +227,9 @@ services:
       - GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE=${GATEWAY_IMAGE_CONCURRENCY_OVERFLOW_MODE:-reject}
       - GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS=${GATEWAY_IMAGE_CONCURRENCY_WAIT_TIMEOUT_SECONDS:-30}
       - GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS=${GATEWAY_IMAGE_CONCURRENCY_MAX_WAITING_REQUESTS:-100}
+      - GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ENABLED=${GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ENABLED:-false}
+      - GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ACCOUNT_IDS=${GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ACCOUNT_IDS:-}
+      - GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_SOCKET_PATH=/run/codex-rust/transport.sock
     depends_on:
       postgres:
         condition: service_healthy
@@ -316,6 +344,8 @@ services:
 # Volumes
 # =============================================================================
 volumes:
+  codex_rust_socket:
+    driver: local
   sub2api_data:
     driver: local
   postgres_data:

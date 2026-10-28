@@ -163,9 +163,10 @@ type openAIHTTP2FallbackState struct {
 // 7. 代理变更时清空旧连接池，避免复用错误代理
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
-	cfg     *config.Config                  // 全局配置
-	mu      sync.RWMutex                    // 保护 clients map 的读写锁
-	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
+	cfg       *config.Config // 全局配置
+	codexRust *codexRustTransport
+	mu        sync.RWMutex                    // 保护 clients map 的读写锁
+	clients   map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
 }
@@ -180,8 +181,9 @@ type httpUpstreamService struct {
 //   - service.HTTPUpstream 接口实现
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 	return &httpUpstreamService{
-		cfg:     cfg,
-		clients: make(map[string]*upstreamClientEntry),
+		cfg:       cfg,
+		codexRust: newCodexRustTransport(cfg),
+		clients:   make(map[string]*upstreamClientEntry),
 	}
 }
 
@@ -210,6 +212,9 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	profile := service.HTTPUpstreamProfileDefault
 	if req != nil {
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
+	}
+	if s.shouldUseCodexRust(req, accountID, profile) {
+		return s.doCodexRust(req, proxyURL, accountID)
 	}
 
 	// 获取或创建对应的客户端，并标记请求占用

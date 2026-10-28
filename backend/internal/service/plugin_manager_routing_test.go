@@ -17,6 +17,17 @@ type pluginRoutingHTTPUpstream struct {
 	doWithTLSCalls int
 }
 
+type rustCanaryRoutingHTTPUpstream struct {
+	pluginRoutingHTTPUpstream
+	accountID int64
+}
+
+func (u *rustCanaryRoutingHTTPUpstream) UseCodexRustFor(req *http.Request, accountID int64) bool {
+	return req != nil && req.URL != nil &&
+		strings.HasPrefix(req.URL.String(), "https://chatgpt.com/backend-api/codex/") &&
+		accountID == u.accountID
+}
+
 func (u *pluginRoutingHTTPUpstream) Do(*http.Request, string, int64, int) (*http.Response, error) {
 	u.doCalls++
 	return &http.Response{
@@ -103,6 +114,26 @@ func TestOpenAIGatewayPluginRoutingPreservesAPIKeyAndFailsClosedForOAuth(t *test
 	assert.Nil(t, oauthResponse)
 	assert.Contains(t, err.Error(), "插件不可用")
 	assert.Equal(t, 1, upstream.doCalls)
+}
+
+func TestOpenAICodexRustCanaryOverridesOptionalOAuthPluginOnlyForSelectedAccount(t *testing.T) {
+	manager := &PluginManager{}
+	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "plugin unavailable"})
+	upstream := &rustCanaryRoutingHTTPUpstream{accountID: 42}
+	service := &OpenAIGatewayService{pluginManager: manager, httpUpstream: upstream}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	require.NoError(t, err)
+	request = request.WithContext(WithHTTPUpstreamProfile(request.Context(), HTTPUpstreamProfileOpenAI))
+	response, err := service.doOpenAIUpstream(request, "", &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	_ = response.Body.Close()
+	assert.Equal(t, 1, upstream.doCalls)
+	_, err = service.doOpenAIUpstream(request, "", &Account{ID: 43, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
+	require.ErrorContains(t, err, "plugin unavailable")
+	assert.Equal(t, 1, upstream.doCalls)
+	assert.False(t, useOpenAICodexRustTransport(upstream, request, &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}))
+	assert.False(t, useOpenAICodexRustTransport(upstream, request, &Account{ID: 42, Platform: PlatformGemini, Type: AccountTypeOAuth}))
 }
 
 func TestStablePluginBucketIsDeterministicAndBounded(t *testing.T) {

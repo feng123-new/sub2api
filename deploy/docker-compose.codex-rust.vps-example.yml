@@ -1,0 +1,29 @@
+# Overlay for an existing bind-mounted VPS deployment. Apply alongside its
+# original docker-compose.yml; do not replace the database/Redis configuration.
+services:
+  sub2api:
+    volumes:
+      - ./data/codex-rust-socket:/run/codex-rust
+    environment:
+      - GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ENABLED=${GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ENABLED:-false}
+      - GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ACCOUNT_IDS=${GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_ACCOUNT_IDS:-}
+      - GATEWAY_OPENAI_CODEX_RUST_TRANSPORT_SOCKET_PATH=/run/codex-rust/transport.sock
+
+  codex-transport-rs:
+    profiles: ["codex-rust"]
+    image: sub2api-codex-transport-rs:0.1.0
+    restart: unless-stopped
+    mem_limit: 256m
+    pids_limit: 64
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./data/codex-rust-socket:/run/codex-rust
+    networks:
+      - sub2api-network
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/codex-rust/transport.sock"]
+      interval: 15s
+      timeout: 3s
+      retries: 3

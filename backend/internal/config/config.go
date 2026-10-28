@@ -1055,6 +1055,8 @@ type GatewayConfig struct {
 	OpenAIScheduler GatewayOpenAISchedulerConfig `mapstructure:"openai_scheduler"`
 	// OpenAIHTTP2: OpenAI HTTP 上游协议策略（默认启用 HTTP/2，可按代理能力回退 HTTP/1.1）
 	OpenAIHTTP2 GatewayOpenAIHTTP2Config `mapstructure:"openai_http2"`
+	// OpenAICodexRustTransport: opt-in Rust network stack for selected Codex accounts.
+	OpenAICodexRustTransport GatewayOpenAICodexRustTransportConfig `mapstructure:"openai_codex_rust_transport"`
 	// OpenAIProxyStreamCircuit: Responses SSE 代理断流熔断策略。
 	OpenAIProxyStreamCircuit GatewayOpenAIProxyStreamCircuitConfig `mapstructure:"openai_proxy_stream_circuit"`
 	// ImageConcurrency: 图片生成独立并发限制配置（默认关闭）
@@ -1210,6 +1212,14 @@ func normalizeGatewayContextPreflightConfig(cfg *GatewayContextPreflightConfig) 
 	for i, model := range cfg.Models {
 		cfg.Models[i] = strings.ToLower(strings.TrimSpace(model))
 	}
+}
+
+// GatewayOpenAICodexRustTransportConfig keeps the experimental transport disabled
+// until explicitly enabled for individual account IDs.
+type GatewayOpenAICodexRustTransportConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`
+	SocketPath string `mapstructure:"socket_path"`
+	AccountIDs string `mapstructure:"account_ids"` // comma-separated positive account IDs
 }
 
 // GatewayOpenAIHTTP2Config OpenAI HTTP 上游协议配置。
@@ -2556,6 +2566,9 @@ func setDefaults() {
 	viper.SetDefault("gateway.openai_ws.scheduler_score_weights.session_sticky", 3.0)
 	// OpenAI HTTP upstream protocol strategy
 	viper.SetDefault("gateway.openai_http2.enabled", true)
+	viper.SetDefault("gateway.openai_codex_rust_transport.enabled", false)
+	viper.SetDefault("gateway.openai_codex_rust_transport.socket_path", "/run/codex-rust/transport.sock")
+	viper.SetDefault("gateway.openai_codex_rust_transport.account_ids", "")
 	viper.SetDefault("gateway.openai_http2.allow_proxy_fallback_to_http1", true)
 	viper.SetDefault("gateway.openai_http2.fallback_error_threshold", 2)
 	viper.SetDefault("gateway.openai_http2.fallback_window_seconds", 60)
