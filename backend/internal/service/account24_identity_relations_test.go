@@ -163,7 +163,10 @@ func TestAccount24IdentityRelationsFinalRequestBuilders(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(request.Header.Get("x-codex-turn-metadata")), &headerMetadata))
 		require.Equal(t, cm["thread_id"], headerMetadata["thread_id"])
 		require.Equal(t, cm["session_id"], headerMetadata["session_id"])
-		require.Equal(t, "codex-tui", request.Header.Get("originator"))
-		require.Contains(t, request.Header.Get("User-Agent"), "(codex-tui; "+request.Header.Get("version")+")")
+		// Outbound TUI identity is normalized to CLI by the shared Codex
+		// compatibility layer. The TUI trailer must not survive this rewrite.
+		require.Equal(t, "codex_cli_rs", request.Header.Get("originator"))
+		require.Contains(t, request.Header.Get("User-Agent"), "codex_cli_rs/"+request.Header.Get("version"))
+		require.NotContains(t, request.Header.Get("User-Agent"), "(codex-tui;")
 	}
 }

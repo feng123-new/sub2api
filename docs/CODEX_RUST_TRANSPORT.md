@@ -39,3 +39,16 @@ VPS 的生产配置使用 `/opt/sub2api-deploy/docker-compose.yml` 和 `./runtim
 测试至少应覆盖：默认关闭、账号白名单、错误时不自动重放、HTTP/2 和 HTTP/1.1、响应状态与 SSE 流、上游代理（直连、HTTP CONNECT、SOCKS）、请求取消、socket 进程退出以及 `resp.Body.Close()` 后资源回收。Rust 镜像构建在隔离环境完成后，再做生产灰度。
 
 本阶段不替换原生 WebSocket 的 TLS 握手，也不承诺与某一版官方 Codex 的 JA3/JA4 字节级一致。reqwest/rustls 的依赖版本和 HTTP/2 协商结果应在每次升级时重新核对。
+
+## Go/Rust 路由请求级可观测性
+
+Go 网关现在对固定目标 `chatgpt.com/backend-api/codex/*` 的 OpenAI/Codex HTTP 请求，在实际选择传输层之后输出两类结构化 INFO 事件：
+
+- `codex_transport_request`：每次请求拿到响应头或传输失败时记录 `attempt_id`（随机关联 ID）、`route`（`go` / `rust`）、`account_id`、`method`、`endpoint`（固定枚举）、`status_code`、`error_type`、`upstream_protocol`（`h2` / `http1` / `unknown`）、`header_latency_ms`。
+- `codex_transport_stream_end`：响应体 EOF、读取失败或关闭时，使用同一 `attempt_id`，记录 `finish_reason`、最终 `error_type`、`total_duration_ms` 和实际路由、协议；因此 SSE 的完整流时长与响应头耗时分开。
+
+`error_type` 为受限类别，包括 `none`、`http_429`、`http_4xx`、`http_5xx`、`canceled`、`timeout`、`transport`、`rust_ipc`、`rust_connect_failed`、`rust_timeout`、`rust_body_failed`、`rust_request_failed`、`rust_send_failed` 以及 `stream_read_error` / `stream_close_error`。网络失败无法确认实际 HTTP 协议时记录 `unknown`。Rust sidecar 的上游错误以安全枚举通过私有 IPC 返回 Go。
+
+事件不包含上游 URL/查询参数、请求体、响应体、Token 或代理地址。两类事件均设置 `ops_system_log_skip=true`，保留在应用的标准日志输出中，**不会为每条 Codex 请求向 PostgreSQL `ops_system_logs` 增加一条持久化记录**，避免加剧该表的历史索引膨胀。运行时需要启用 INFO 日志级别，并在受控的应用日志中按 `codex_transport_request` / `codex_transport_stream_end` 或 `attempt_id` 检索。
+
+记录范围覆盖经 `HTTPUpstream.Do` 与 `DoWithTLS` 的固定 Codex HTTP/SSE 请求；不包含目标主机预校验阶段被拒绝的请求，也不覆盖原生 WebSocket 连接。全局 Rust 开关和账号 OAuth 条件仍由现有路由逻辑决定，日志显示每次实际选中的 `go` 或 `rust`，不会仅根据配置推断。

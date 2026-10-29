@@ -118,6 +118,7 @@ func TestCodexRustTransportUnixStreaming(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket integration requires Unix")
 	}
+	logs := captureCodexTransportLogs(t)
 	socket := filepath.Join(t.TempDir(), "transport.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
@@ -172,6 +173,11 @@ func TestCodexRustTransportUnixStreaming(t *testing.T) {
 	if string(data) != "data: first\n\ndata: second\n\n" || resp.ProtoMajor != 2 || resp.Header.Get("X-Codex-Rust-Upstream-Proto") != "" {
 		t.Fatalf("unexpected response: protocol=%s body=%q", resp.Proto, data)
 	}
+	records := parseCodexTransportLogs(t, logs)
+	if len(records) != 2 || records[0]["route"] != "rust" || records[0]["upstream_protocol"] != "h2" ||
+		records[0]["error_type"] != "none" || records[1]["finish_reason"] != "eof" {
+		t.Fatalf("Rust request observability missing: %#v", records)
+	}
 }
 
 func TestCodexRustTransportClosesStreamingSocketOnCancel(t *testing.T) {
@@ -216,6 +222,7 @@ func TestCodexRustTransportFailsClosedAfterPossibleSend(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket integration requires Unix")
 	}
+	logs := captureCodexTransportLogs(t)
 	socket := filepath.Join(t.TempDir(), "transport.sock")
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
@@ -233,5 +240,10 @@ func TestCodexRustTransportFailsClosedAfterPossibleSend(t *testing.T) {
 	var transportErr *service.PluginTransportError
 	if !errors.As(err, &transportErr) || !transportErr.RequestSent {
 		t.Fatalf("possible upstream send must be non-replayable, got %v", err)
+	}
+	records := parseCodexTransportLogs(t, logs)
+	if len(records) != 1 || records[0]["route"] != "rust" ||
+		records[0]["error_type"] != "rust_send_failed" || records[0]["upstream_protocol"] != "unknown" {
+		t.Fatalf("Rust upstream failure was not classified: %#v", records)
 	}
 }

@@ -182,6 +182,22 @@ fn internal_error(code: &'static str) -> Response<Body> {
         .expect("valid error response")
 }
 
+// Keep failure classification coarse and safe to send back over IPC. An error
+// string could include proxy credentials or a URL and must never enter logs.
+fn upstream_error_code(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connect_failed"
+    } else if err.is_body() {
+        "body_failed"
+    } else if err.is_request() {
+        "request_failed"
+    } else {
+        "send_failed"
+    }
+}
+
 async fn handle(
     req: Request<Incoming>,
     state: Arc<AppState>,
@@ -252,7 +268,7 @@ async fn forward(req: Request<Incoming>, state: Arc<AppState>) -> Response<Body>
     };
     let upstream_response = match upstream_result {
         Ok(response) => response,
-        Err(_) => return internal_error("send_failed"),
+        Err(err) => return internal_error(upstream_error_code(&err)),
     };
 
     let status = upstream_response.status();
