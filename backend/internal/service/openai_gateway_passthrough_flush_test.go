@@ -62,6 +62,43 @@ func (r *passthroughFlushTestErrorBody) Read(p []byte) (int, error) {
 
 func (r *passthroughFlushTestErrorBody) Close() error { return nil }
 
+// The upstream reader may return a complete SSE terminal frame and a non-EOF
+// error in the same Read. Scanner still delivers the buffered event to service.
+type passthroughTerminalOutcomeTestBody struct {
+	payload []byte
+	sent    bool
+	outcome string
+}
+
+func (r *passthroughTerminalOutcomeTestBody) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.ErrUnexpectedEOF
+	}
+	r.sent = true
+	return copy(p, r.payload), io.ErrUnexpectedEOF
+}
+
+func (*passthroughTerminalOutcomeTestBody) Close() error { return nil }
+
+func (r *passthroughTerminalOutcomeTestBody) SetCodexTransportStreamOutcome(outcome string) {
+	r.outcome = outcome
+}
+
+type passthroughObservedTransformSource struct {
+	*strings.Reader
+	outcome string
+	closes  int
+}
+
+func (r *passthroughObservedTransformSource) Close() error {
+	r.closes++
+	return nil
+}
+
+func (r *passthroughObservedTransformSource) SetCodexTransportStreamOutcome(outcome string) {
+	r.outcome = outcome
+}
+
 func runPassthroughFlushTest(
 	t *testing.T,
 	body io.ReadCloser,
@@ -125,6 +162,46 @@ func TestOpenAIStreamingPassthroughFlushesAtCompleteEventBoundaries(t *testing.T
 	}, writer.flushBodyLengths)
 	require.Equal(t, 3, result.usage.InputTokens)
 	require.Equal(t, 2, result.usage.OutputTokens)
+}
+
+func TestOpenAIStreamingPassthroughReportsAcceptedTerminalDespiteReadError(t *testing.T) {
+	for _, terminal := range []string{"response.completed", "response.incomplete"} {
+		t.Run(terminal, func(t *testing.T) {
+			payload := `data: {"type":"response.output_text.delta","delta":"ok"}` + "\n\n" +
+				`data: {"type":"` + terminal + `","response":{"usage":{"input_tokens":2,"output_tokens":1}}}` + "\n\n"
+			body := &passthroughTerminalOutcomeTestBody{payload: []byte(payload)}
+			result, _, _, err := runPassthroughFlushTest(t, body, -1)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.True(t, body.sent)
+			require.Equal(t, terminal, body.outcome)
+		})
+	}
+}
+
+func TestOpenAIStreamingPassthroughReportsFailedTerminalBeforeFailover(t *testing.T) {
+	payload := `data: {"type":"response.failed","response":{"status":"failed","error":{"code":"account_disabled","message":"disabled"}}}` + "\n\n"
+	body := &passthroughTerminalOutcomeTestBody{payload: []byte(payload)}
+	_, _, _, err := runPassthroughFlushTest(t, body, -1)
+	require.Error(t, err)
+	require.Equal(t, "response.failed", body.outcome)
+}
+
+func TestCodexObservedClientToolTransformKeepsSourceOpenUntilOutcome(t *testing.T) {
+	stream := `data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1}}}` + "\n\n"
+	source := &passthroughObservedTransformSource{Reader: strings.NewReader(stream)}
+	body := newResponsesClientToolStreamBody(source,
+		apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"example": true}}, defaultMaxLineSize)
+	result, err := io.ReadAll(body)
+	require.NoError(t, err)
+	require.Contains(t, string(result), "response.completed")
+	require.Zero(t, source.closes, "transform must not close before service reports the terminal outcome")
+	reporter, ok := body.(interface{ SetCodexTransportStreamOutcome(string) })
+	require.True(t, ok)
+	reporter.SetCodexTransportStreamOutcome("response.completed")
+	require.NoError(t, body.Close())
+	require.Equal(t, "response.completed", source.outcome)
+	require.Equal(t, 1, source.closes)
 }
 
 func TestOpenAIStreamingPassthroughKeepsPreamblePendingUntilFirstOutputBoundary(t *testing.T) {

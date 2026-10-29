@@ -45,9 +45,11 @@ VPS 的生产配置使用 `/opt/sub2api-deploy/docker-compose.yml` 和 `./runtim
 Go 网关现在对固定目标 `chatgpt.com/backend-api/codex/*` 的 OpenAI/Codex HTTP 请求，在实际选择传输层之后输出两类结构化 INFO 事件：
 
 - `codex_transport_request`：每次请求拿到响应头或传输失败时记录 `attempt_id`（随机关联 ID）、`route`（`go` / `rust`）、`account_id`、`method`、`endpoint`（固定枚举）、`status_code`、`error_type`、`upstream_protocol`（`h2` / `http1` / `unknown`）、`header_latency_ms`。
-- `codex_transport_stream_end`：响应体 EOF、读取失败或关闭时，使用同一 `attempt_id`，记录 `finish_reason`、最终 `error_type`、`total_duration_ms` 和实际路由、协议；因此 SSE 的完整流时长与响应头耗时分开。
+- `codex_transport_stream_end`：响应体关闭时，使用同一 `attempt_id`，记录 `finish_reason`、最终 `error_type`、`read_error_type`、`close_error`（布尔值）、`total_duration_ms` 和实际路由、协议；因此 SSE 的完整流时长与响应头耗时分开。
 
-`error_type` 为受限类别，包括 `none`、`http_429`、`http_4xx`、`http_5xx`、`canceled`、`timeout`、`transport`、`rust_ipc`、`rust_connect_failed`、`rust_timeout`、`rust_body_failed`、`rust_request_failed`、`rust_send_failed` 以及 `stream_read_error` / `stream_close_error`。网络失败无法确认实际 HTTP 协议时记录 `unknown`。Rust sidecar 的上游错误以安全枚举通过私有 IPC 返回 Go。
+`error_type` 为受限类别，包括 `none`、`http_429`、`http_4xx`、`http_5xx`、`canceled`、`timeout`、`transport`、`rust_ipc`、`rust_connect_failed`、`rust_timeout`、`rust_body_failed`、`rust_request_failed`、`rust_send_failed`、`stream_read_error` / `stream_close_error`，以及 `upstream_response_failed` / `upstream_response_incomplete` / `upstream_response_canceled` / `stream_handler_error`。网络失败无法确认实际 HTTP 协议时记录 `unknown`。Rust sidecar 的上游错误以安全枚举通过私有 IPC 返回 Go。
+
+SSE 处理器会把已接受的 `response.completed`、`response.failed`、`response.incomplete` 或 `[DONE]` 终止状态报告给观测层。若底层 `Read` 在同一次调用返回了完整的终止事件和非 EOF 错误，服务可以正确完成解析，此时 `finish_reason=terminal_completed` / `error_type=none`，底层异常仍在独立的 `read_error_type` 字段中保留（`unexpected_eof`、`canceled`、`timeout`、`connection_closed`、`read_after_close`、`other` 或 `none`），避免把成功请求计入失败率。未接受到终止事件的读取失败仍记录为 `stream_read_error`。调用方须关闭响应体以写出最终事件。
 
 事件不包含上游 URL/查询参数、请求体、响应体、Token 或代理地址。两类事件均设置 `ops_system_log_skip=true`，保留在应用的标准日志输出中，**不会为每条 Codex 请求向 PostgreSQL `ops_system_logs` 增加一条持久化记录**，避免加剧该表的历史索引膨胀。运行时需要启用 INFO 日志级别，并在受控的应用日志中按 `codex_transport_request` / `codex_transport_stream_end` 或 `attempt_id` 检索。
 

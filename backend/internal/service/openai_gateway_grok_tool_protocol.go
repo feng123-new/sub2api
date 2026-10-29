@@ -109,6 +109,12 @@ type responsesClientToolStreamBody struct {
 	source io.Closer
 }
 
+func (b *responsesClientToolStreamBody) SetCodexTransportStreamOutcome(outcome string) {
+	if observed, ok := b.source.(interface{ SetCodexTransportStreamOutcome(string) }); ok {
+		observed.SetCodexTransportStreamOutcome(outcome)
+	}
+}
+
 func (b *responsesClientToolStreamBody) Close() error {
 	readerErr := b.PipeReader.Close()
 	sourceErr := b.source.Close()
@@ -143,7 +149,12 @@ func transformResponsesClientToolStream(
 	mapping apicompat.ResponsesClientToolMapping,
 	maxLineSize int,
 ) {
-	defer func() { _ = source.Close() }()
+	// The Codex observer must receive the handler's accepted terminal outcome
+	// before its source is closed and the final transport event is emitted.
+	// Other sources retain the transform's existing automatic cleanup behavior.
+	if _, observed := source.(interface{ SetCodexTransportStreamOutcome(string) }); !observed {
+		defer func() { _ = source.Close() }()
+	}
 	if maxLineSize <= 0 {
 		maxLineSize = defaultMaxLineSize
 	}

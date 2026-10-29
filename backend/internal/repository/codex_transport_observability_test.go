@@ -110,7 +110,9 @@ func TestCodexTransportStreamReadErrorIsClassified(t *testing.T) {
 	_ = resp.Body.Close()
 	records := parseCodexTransportLogs(t, logs)
 	if len(records) != 2 || records[1]["finish_reason"] != "read_error" ||
-		records[1]["error_type"] != "stream_read_error" || records[0]["attempt_id"] != records[1]["attempt_id"] {
+		records[1]["error_type"] != "stream_read_error" ||
+		records[1]["read_error_type"] != "other" ||
+		records[0]["attempt_id"] != records[1]["attempt_id"] {
 		t.Fatalf("stream read failure missing from transport logs: %#v", records)
 	}
 }
@@ -118,6 +120,58 @@ func TestCodexTransportStreamReadErrorIsClassified(t *testing.T) {
 type failingCodexReader struct{}
 
 func (*failingCodexReader) Read([]byte) (int, error) { return 0, errors.New("private read error") }
+
+func TestCodexTransportAcceptedSSETerminalOverridesBufferedReadError(t *testing.T) {
+	for _, tt := range []struct {
+		terminal string
+		reason   string
+		errType  string
+	}{
+		{"response.completed", "terminal_completed", "none"},
+		{"[DONE]", "terminal_completed", "none"},
+		{"response.failed", "terminal_failed", "upstream_response_failed"},
+		{"response.incomplete", "terminal_incomplete", "upstream_response_incomplete"},
+	} {
+		t.Run(tt.terminal, func(t *testing.T) {
+			logs := captureCodexTransportLogs(t)
+			req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := &http.Response{StatusCode: 200, ProtoMajor: 2, Body: io.NopCloser(&failingCodexReader{})}
+			observeCodexTransport(req, 174, service.CodexTransportRust, time.Now(), resp, nil)
+			_, _ = resp.Body.Read(make([]byte, 256))
+			observed := resp.Body.(*codexTransportObservedBody)
+			observed.SetCodexTransportStreamOutcome(tt.terminal)
+			_ = resp.Body.Close()
+			records := parseCodexTransportLogs(t, logs)
+			if len(records) != 2 || records[1]["finish_reason"] != tt.reason ||
+				records[1]["error_type"] != tt.errType || records[1]["read_error_type"] != "other" {
+				t.Fatalf("SSE terminal must determine final outcome while preserving read error: %#v", records)
+			}
+		})
+	}
+}
+
+func TestCodexTransportOnlyEmitsEndAfterClose(t *testing.T) {
+	logs := captureCodexTransportLogs(t)
+	req, err := http.NewRequest(http.MethodPost, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := &http.Response{StatusCode: 200, ProtoMajor: 2, Body: io.NopCloser(&failingCodexReader{})}
+	observeCodexTransport(req, 174, service.CodexTransportRust, time.Now(), resp, nil)
+	_, _ = resp.Body.Read(make([]byte, 10))
+	if records := parseCodexTransportLogs(t, logs); len(records) != 1 {
+		t.Fatalf("read error emitted completion before semantic outcome: %#v", records)
+	}
+	resp.Body.(*codexTransportObservedBody).SetCodexTransportStreamOutcome("response.completed")
+	_ = resp.Body.Close()
+	_ = resp.Body.Close()
+	if records := parseCodexTransportLogs(t, logs); len(records) != 2 {
+		t.Fatalf("Close should emit exactly one final event: %#v", records)
+	}
+}
 
 func TestCodexTransportObservationClassifiesErrorsWithoutRawMessages(t *testing.T) {
 	tests := []struct {

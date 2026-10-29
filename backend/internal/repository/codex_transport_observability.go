@@ -131,8 +131,22 @@ func observeCodexTransport(req *http.Request, accountID int64, route string, sta
 	}
 	resp.Body = &codexTransportObservedBody{
 		ReadCloser: resp.Body,
-		finish: func(reason string) {
+		finish: func(reason, outcome, readErrorType string, closeError bool) {
 			endErrorType := codexTransportErrorType(resp, nil)
+			switch outcome {
+			case "response.completed", "response.done", "[DONE]":
+				reason = "terminal_completed"
+			case "response.failed", "error":
+				reason, endErrorType = "terminal_failed", "upstream_response_failed"
+			case "response.incomplete":
+				reason, endErrorType = "terminal_incomplete", "upstream_response_incomplete"
+			case "response.cancelled", "response.canceled":
+				reason, endErrorType = "terminal_canceled", "upstream_response_canceled"
+			case "handler_error":
+				if reason != "read_error" && reason != "close_error" {
+					reason, endErrorType = "handler_error", "stream_handler_error"
+				}
+			}
 			if reason == "read_error" || reason == "close_error" {
 				endErrorType = "stream_" + reason
 			}
@@ -148,6 +162,8 @@ func observeCodexTransport(req *http.Request, accountID int64, route string, sta
 				"error_type", endErrorType,
 				"upstream_protocol", protocol,
 				"finish_reason", reason,
+				"read_error_type", readErrorType,
+				"close_error", closeError,
 				"total_duration_ms", codexTransportElapsedMS(started),
 			)
 		},
@@ -156,8 +172,12 @@ func observeCodexTransport(req *http.Request, accountID int64, route string, sta
 
 type codexTransportObservedBody struct {
 	io.ReadCloser
-	once   sync.Once
-	finish func(string)
+	mu            sync.Mutex
+	once          sync.Once
+	readReason    string
+	readErrorType string
+	outcome       string
+	finish        func(reason, outcome, readErrorType string, closeError bool)
 }
 
 func (b *codexTransportObservedBody) Read(p []byte) (int, error) {
@@ -167,17 +187,66 @@ func (b *codexTransportObservedBody) Read(p []byte) (int, error) {
 		if errors.Is(err, io.EOF) {
 			reason = "eof"
 		}
-		b.once.Do(func() { b.finish(reason) })
+		b.mu.Lock()
+		if b.readReason == "" || (b.readReason == "eof" && reason == "read_error") {
+			b.readReason = reason
+		}
+		if reason == "read_error" && b.readErrorType == "" {
+			b.readErrorType = codexTransportReadErrorType(err)
+		}
+		b.mu.Unlock()
 	}
 	return n, err
 }
 
+// The SSE handler knows whether a complete terminal event was accepted. A
+// transport Read error alone cannot determine that semantic outcome: Scanner
+// may already have received the terminal frame in the same buffered read.
+func (b *codexTransportObservedBody) SetCodexTransportStreamOutcome(outcome string) {
+	b.mu.Lock()
+	b.outcome = outcome
+	b.mu.Unlock()
+}
+
+func codexTransportReadErrorType(err error) string {
+	switch {
+	case err == nil || errors.Is(err, io.EOF):
+		return "none"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "unexpected_eof"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, net.ErrClosed), errors.Is(err, io.ErrClosedPipe):
+		return "connection_closed"
+	case errors.Is(err, http.ErrBodyReadAfterClose):
+		return "read_after_close"
+	default:
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return "timeout"
+		}
+		return "other"
+	}
+}
+
 func (b *codexTransportObservedBody) Close() error {
 	err := b.ReadCloser.Close()
-	reason := "closed"
-	if err != nil {
-		reason = "close_error"
-	}
-	b.once.Do(func() { b.finish(reason) })
+	b.once.Do(func() {
+		b.mu.Lock()
+		reason, outcome, readErrorType := b.readReason, b.outcome, b.readErrorType
+		b.mu.Unlock()
+		if reason == "" {
+			reason = "closed"
+		}
+		if err != nil && reason != "read_error" {
+			reason = "close_error"
+		}
+		if readErrorType == "" {
+			readErrorType = "none"
+		}
+		b.finish(reason, outcome, readErrorType, err != nil)
+	})
 	return err
 }

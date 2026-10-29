@@ -1884,7 +1884,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	startTime time.Time,
 	originalModel string,
 	mappedModel string,
-) (*openaiStreamingResultPassthrough, error) {
+) (result *openaiStreamingResultPassthrough, streamErr error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -1918,6 +1918,27 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	sawBareError := false
 	sawResponseFailed := false
 	terminalEventType := ""
+	seenUpstreamError := false
+	// The transport observer closes after this handler returns. Record the
+	// accepted SSE outcome before Close so a buffered terminal event is not
+	// mistaken for a failed request when an underlying Read also returned an
+	// error. This optional interface keeps the service independent of repository.
+	defer func() {
+		observed, ok := resp.Body.(interface{ SetCodexTransportStreamOutcome(string) })
+		if !ok {
+			return
+		}
+		switch {
+		case sawFailedEvent || (seenUpstreamError && streamErr != nil):
+			observed.SetCodexTransportStreamOutcome("response.failed")
+		case streamErr != nil:
+			observed.SetCodexTransportStreamOutcome("handler_error")
+		case sawDone:
+			observed.SetCodexTransportStreamOutcome("[DONE]")
+		case sawTerminalEvent:
+			observed.SetCodexTransportStreamOutcome(terminalEventType)
+		}
+	}()
 	semanticOutputSeen := false
 	capacityFailoverSuppressedLogged := false
 	failedMessage := ""
@@ -2093,6 +2114,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			}
 			cyberHit := false
 			if eventType == "response.failed" || eventType == "error" {
+				seenUpstreamError = true
 				if codexFailureTerminal && eventType == "error" {
 					sawBareError = true
 					bareErrorPayload = append(bareErrorPayload[:0], dataBytes...)
