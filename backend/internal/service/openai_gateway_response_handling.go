@@ -48,7 +48,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 	return s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, mappedModel, "")
 }
 
-func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
+func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (result *openaiStreamingResult, streamErr error) {
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -266,6 +266,29 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	eventStartsClientOutput := false
 	eventStartsTTFTOutput := false
 	eventShouldFlush := false
+	// The native SSE handler may close an actively-reading body as soon as a
+	// complete terminal event is accepted. Give the Codex transport observer
+	// that semantic outcome *before* Close emits its final event. This is
+	// intentionally optional, so non-Codex HTTP response bodies are unchanged.
+	reportStreamOutcome := func(handlerError bool) {
+		observed, ok := resp.Body.(interface{ SetCodexTransportStreamOutcome(string) })
+		if !ok {
+			return
+		}
+		switch {
+		case sawFailedEvent || (codexFailureTerminal && sawBareError && !sawResponseFailed):
+			observed.SetCodexTransportStreamOutcome("response.failed")
+		case handlerError:
+			observed.SetCodexTransportStreamOutcome("handler_error")
+		case sawTerminalEvent && !eventInProgress:
+			observed.SetCodexTransportStreamOutcome(terminalEventType)
+		}
+	}
+	defer func() { reportStreamOutcome(streamErr != nil) }()
+	closeStreamBody := func() {
+		reportStreamOutcome(streamEarlyErr != nil || !sawTerminalEvent || eventInProgress)
+		_ = resp.Body.Close()
+	}
 	handlePendingWriteError := func(err error) {
 		if firstOutputStage != nil && !firstOutputStage.closed {
 			message := "OpenAI first-output staging failed"
@@ -276,7 +299,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			failoverErr := s.newOpenAIStreamFailoverError(c, account, false, upstreamRequestID, nil, message)
 			failoverErr.SafeToFailoverAfterWrite = true
 			streamEarlyErr = failoverErr
-			_ = resp.Body.Close()
+			closeStreamBody()
 			return
 		}
 		clientDisconnected = true
@@ -924,7 +947,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			// Codex bare error 序列（error 后可能跟 response.failed 或翻盘的 completed）
 			// 必须继续读取，不适用提前结束。
 			if sawTerminalEvent && !eventInProgress && (!codexFailureTerminal || !sawBareError) {
-				_ = resp.Body.Close()
+				closeStreamBody()
 				return finalizeStream(false)
 			}
 
@@ -937,7 +960,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				continue
 			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed {
-				_ = resp.Body.Close()
+				closeStreamBody()
 				return finalizeStream(false)
 			}
 			if clientDisconnected {
@@ -954,7 +977,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			if account != nil && account.Platform == PlatformGrok {
 				s.tempUnscheduleGrok(ctx, account, grokStreamIdleCooldown, "grok stream idle timeout")
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
-					_ = resp.Body.Close()
+					closeStreamBody()
 					return resultWithUsage(), grokStreamIdleFailoverError(account, streamInterval)
 				}
 			}
@@ -967,10 +990,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				continue
 			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed && len(events) == 0 {
-				_ = resp.Body.Close()
+				closeStreamBody()
 				return finalizeStream(false)
 			}
-			_ = resp.Body.Close()
+			closeStreamBody()
 			for ev := range events {
 				markEventProcessed(ev)
 			}

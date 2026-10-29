@@ -65,9 +65,11 @@ func (r *passthroughFlushTestErrorBody) Close() error { return nil }
 // The upstream reader may return a complete SSE terminal frame and a non-EOF
 // error in the same Read. Scanner still delivers the buffered event to service.
 type passthroughTerminalOutcomeTestBody struct {
-	payload []byte
-	sent    bool
-	outcome string
+	payload       []byte
+	sent          bool
+	outcome       string
+	closedOutcome string
+	closes        int
 }
 
 func (r *passthroughTerminalOutcomeTestBody) Read(p []byte) (int, error) {
@@ -78,7 +80,11 @@ func (r *passthroughTerminalOutcomeTestBody) Read(p []byte) (int, error) {
 	return copy(p, r.payload), io.ErrUnexpectedEOF
 }
 
-func (*passthroughTerminalOutcomeTestBody) Close() error { return nil }
+func (r *passthroughTerminalOutcomeTestBody) Close() error {
+	r.closes++
+	r.closedOutcome = r.outcome
+	return nil
+}
 
 func (r *passthroughTerminalOutcomeTestBody) SetCodexTransportStreamOutcome(outcome string) {
 	r.outcome = outcome
@@ -185,6 +191,70 @@ func TestOpenAIStreamingPassthroughReportsFailedTerminalBeforeFailover(t *testin
 	_, _, _, err := runPassthroughFlushTest(t, body, -1)
 	require.Error(t, err)
 	require.Equal(t, "response.failed", body.outcome)
+}
+
+func TestOpenAINativeStreamingReportsTerminalBeforeClosingBody(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		keepalive int
+	}{
+		{name: "sync"},
+		{name: "async", keepalive: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, terminal := range []string{"response.completed", "response.incomplete"} {
+				t.Run(terminal, func(t *testing.T) {
+					payload := `data: {"type":"response.output_text.delta","delta":"ok"}` + "\n\n" +
+						`data: {"type":"` + terminal + `","response":{"usage":{"input_tokens":2,"output_tokens":1}}}` + "\n\n"
+					body := &passthroughTerminalOutcomeTestBody{payload: []byte(payload)}
+					gin.SetMode(gin.TestMode)
+					recorder := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(recorder)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+					svc := &OpenAIGatewayService{cfg: &config.Config{
+						Gateway: config.GatewayConfig{
+							MaxLineSize:             defaultMaxLineSize,
+							StreamKeepaliveInterval: tt.keepalive,
+						},
+					}}
+					resp := &http.Response{StatusCode: http.StatusOK, Body: body, Header: http.Header{}}
+					result, err := svc.handleStreamingResponse(c.Request.Context(), resp, c,
+						&Account{ID: 1, Platform: PlatformOpenAI, Name: "native-terminal-test"}, time.Now(), "model", "model")
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.Equal(t, 2, result.usage.InputTokens)
+					require.Equal(t, 1, result.usage.OutputTokens)
+					require.Contains(t, recorder.Body.String(), terminal)
+					if tt.keepalive == 0 {
+						require.Zero(t, body.closes, "sync caller owns the body close")
+						require.NoError(t, body.Close())
+					}
+					require.Equal(t, terminal, body.outcome)
+					require.Equal(t, terminal, body.closedOutcome, "terminal must be recorded before Close")
+					require.Equal(t, 1, body.closes)
+				})
+			}
+		})
+	}
+}
+
+func TestOpenAINativeStreamingReportsHandlerErrorWithoutTerminal(t *testing.T) {
+	body := &passthroughTerminalOutcomeTestBody{payload: []byte(
+		`data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\n")}
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	svc := &OpenAIGatewayService{cfg: &config.Config{
+		Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+	}}
+	resp := &http.Response{StatusCode: http.StatusOK, Body: body, Header: http.Header{}}
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c,
+		&Account{ID: 1, Platform: PlatformOpenAI, Name: "native-error-test"}, time.Now(), "model", "model")
+	require.Error(t, err)
+	require.Equal(t, "handler_error", body.outcome)
+	require.NoError(t, body.Close())
+	require.Equal(t, "handler_error", body.closedOutcome)
 }
 
 func TestCodexObservedClientToolTransformKeepsSourceOpenUntilOutcome(t *testing.T) {
