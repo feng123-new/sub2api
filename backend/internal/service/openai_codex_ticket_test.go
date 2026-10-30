@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -27,7 +29,7 @@ func ticketTestAccount(id int64) *Account {
 		Platform:    PlatformOpenAI,
 		Type:        AccountTypeOAuth,
 		Credentials: map[string]any{"access_token": "tok", "chatgpt_account_id": "acc-1"},
-		Extra: map[string]any{codexTicketAccountEnabledKey: true},
+		Extra:       map[string]any{codexTicketAccountEnabledKey: true},
 	}
 }
 
@@ -38,6 +40,59 @@ func ticketTestService(t *testing.T, cfg config.OpenAICodexTicketConfig, upstrea
 			Gateway: config.GatewayConfig{OpenAICodexTicket: cfg},
 		},
 		httpUpstream: upstream,
+	}
+}
+
+// Simulate business validation separately from the harvest transport; the
+// underlying test recorder still observes only harvest requests.
+type codexTicketValidationUpstream struct{ HTTPUpstream }
+
+func (u codexTicketValidationUpstream) Do(req *http.Request, proxyURL string, accountID int64, concurrency int) (*http.Response, error) {
+	if req.Header.Get(openAICodexTurnStateHeader) == "" {
+		return u.HTTPUpstream.Do(req, proxyURL, accountID, concurrency)
+	}
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if req.Body == nil {
+		return nil, errors.New("validation request missing body")
+	}
+	if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if payload.Model == "" {
+		return nil, errors.New("validation request missing model")
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"model":` + jsonString(payload.Model) + `}}` + "\n\n"))}, nil
+}
+
+func TestAutomaticCodexTicketRequiresCompletedBusinessValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload, outcome string
+		status                 int
+	}{
+		{"mismatched_model", `data: {"type":"response.completed","response":{"model":"different-model"}}` + "\n\n", "response_model_mismatch", 200},
+		{"incomplete", "", "incomplete_response", 200},
+		{"rate_limited", "", "rate_limited", 429},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			headers := http.Header{}
+			headers.Set(openAICodexTurnStateHeader, fakeCodexTicketState(292))
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{
+				{StatusCode: http.StatusOK, Header: headers, Body: io.NopCloser(strings.NewReader(""))},
+				{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.payload))},
+			}}
+			svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://harvest.test:8080"}, upstream)
+			account := ticketTestAccount(41)
+			result, err := svc.runCodexTicketAttempt(context.Background(), account, "gpt-6-astra", "automatic")
+			require.NoError(t, err)
+			require.Equal(t, "miss", result.Outcome)
+			require.Equal(t, tc.outcome, result.ReasonCode)
+			require.Equal(t, tc.outcome, result.ValidationOutcome)
+			require.Nil(t, svc.lookupOpenAICodexTicket(account, "gpt-6-astra"))
+			require.Len(t, upstream.requests, 2)
+		})
 	}
 }
 
@@ -224,7 +279,7 @@ func TestHarvestOpenAICodexTicket_StopsAt292AndUsesHarvestProxy(t *testing.T) {
 		HarvestProxyURL:              "socks5h://user:pass@harvest.example:31",
 		HarvestAttemptTimeoutSeconds: 5,
 		FailClosed:                   true,
-	}, upstream)
+	}, codexTicketValidationUpstream{upstream})
 	account := ticketTestAccount(41)
 
 	svc.probeOnceOpenAICodexTicket(context.Background(), account, "gpt-6-astra")
@@ -269,7 +324,7 @@ func TestHarvestOpenAICodexTicket_HTTP503DoesNotAbortHunt(t *testing.T) {
 		HarvestProxyURL:              "socks5h://harvest.example:31",
 		HarvestAttemptTimeoutSeconds: 5,
 		FailClosed:                   true,
-	}, upstream)
+	}, codexTicketValidationUpstream{upstream})
 	account := ticketTestAccount(41)
 	svc.probeOnceOpenAICodexTicket(context.Background(), account, "gpt-6-astra")
 	require.Nil(t, svc.lookupOpenAICodexTicket(account, "gpt-6-astra"))
@@ -284,7 +339,7 @@ func TestLookupOpenAICodexTicket_HydratesFromExtra(t *testing.T) {
 	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, TargetLength: 292, TTLSeconds: 3600}, nil)
 	state := fakeCodexTicketState(292)
 	account := ticketTestAccount(9)
-	account.Extra = map[string]any{codexTicketAccountEnabledKey: true, 
+	account.Extra = map[string]any{codexTicketAccountEnabledKey: true,
 		openAICodexTicketExtraKey("gpt-6-astra"): map[string]any{
 			"state":       state,
 			"length":      292,
@@ -301,7 +356,7 @@ func TestLookupOpenAICodexTicket_HydratesFromExtra(t *testing.T) {
 
 func TestOpenAICodexTicketStatuses_ReportsRemainingTTL(t *testing.T) {
 	account := ticketTestAccount(41)
-	account.Extra = map[string]any{codexTicketAccountEnabledKey: true, 
+	account.Extra = map[string]any{codexTicketAccountEnabledKey: true,
 		openAICodexTicketExtraKey("gpt-6-astra"): map[string]any{
 			"state":       fakeCodexTicketState(292),
 			"length":      292,
@@ -375,13 +430,15 @@ func TestRefreshOpenAICodexTickets_ConcurrentModelsPreserveAccountSnapshot(t *te
 	account.Extra = map[string]any{codexTicketAccountEnabledKey: true, "existing": true}
 	repo := &codexTicketRefreshRepo{accounts: []Account{*account}}
 	upstream := &codexTicketConcurrentUpstream{ready: make(chan struct{})}
-	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "socks5h://proxy.example.com:1080"}, upstream)
+	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "socks5h://proxy.example.com:1080"}, codexTicketValidationUpstream{upstream})
 	svc.accountRepo = repo
 	svc.refreshOpenAICodexTickets(context.Background())
 	require.Equal(t, int64(2), upstream.started.Load())
 	require.Equal(t, map[string]any{codexTicketAccountEnabledKey: true, "existing": true}, account.Extra)
-	require.Len(t, repo.updates, 2)
+	require.Len(t, repo.updates, 4)
 	for _, model := range []string{openAICodexTicketDefaultModel, openAICodexTicketDefaultSolModel} {
+		require.Contains(t, repo.updates, codexTicketPinPrefix+model)
+		require.Nil(t, repo.updates[codexTicketPinPrefix+model])
 		ticket := svc.lookupOpenAICodexTicket(account, model)
 		require.NotNil(t, ticket)
 		require.True(t, ticket.valid(time.Now(), 292))

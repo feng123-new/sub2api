@@ -573,9 +573,9 @@ func (s *OpenAIGatewayService) refreshOpenAICodexTickets(ctx context.Context) {
 	}
 }
 
-// probeOnceOpenAICodexTicket 走打票代理打一发。HTTP 200/429 携带符合账号长度规则、
-// gAAAAA 前缀的票据即落库；否则记 Info miss，交给下个周期重试。同一 key 并发去重，避免上一发还没
-// 回来又叠一发。
+// probeOnceOpenAICodexTicket 使用打票代理获取符合账号长度规则、gAAAAA 前缀的票据，
+// 然后使用业务代理验证模型确实完成响应。验证成功才推广票据；失败稍后重试。
+// 同一 key 并发去重，避免上一发还没回来又叠一发。
 func (s *OpenAIGatewayService) probeOnceOpenAICodexTicket(ctx context.Context, account *Account, model string) {
 	if s == nil || !CodexTicketHarvestEnabled(account, model) || ctx.Err() != nil || !s.openAICodexTicketEnabledContext(ctx) {
 		return

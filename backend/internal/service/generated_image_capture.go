@@ -110,7 +110,7 @@ func hasFinalGeneratedImage(payload []byte) bool {
 	if signal, ok := detectGeminiResponseSignal(payload); ok && signal.Kind != geminiSignalNone {
 		return false
 	}
-	if countGeminiInlineImageOutputs(payload) > 0 {
+	if countGeminiImageOutputs(payload) > 0 {
 		return true
 	}
 	if eventType := root.Get("type").String(); eventType != "" && eventType != "response" && eventType != "response.completed" && eventType != "response.done" && eventType != "response.output_item.done" && eventType != "image_generation.completed" && eventType != "image_edit.completed" {

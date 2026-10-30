@@ -2063,7 +2063,7 @@ func TestOpenAIGatewayService_OAuthPassthrough_NonCodexUAFallbackToCodexUA(t *te
 	require.Equal(t, codexCLIUserAgent, upstream.lastReq.Header.Get("User-Agent"))
 }
 
-func TestOpenAIGatewayService_OAuthResponses_PreservesClientXTimezone(t *testing.T) {
+func TestOpenAIGatewayService_OAuthResponses_NormalizesClientXTimezone(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -2092,7 +2092,7 @@ func TestOpenAIGatewayService_OAuthResponses_PreservesClientXTimezone(t *testing
 
 	_, _ = svc.Forward(context.Background(), c, account, inputBody)
 	require.NotNil(t, upstream.lastReq)
-	require.Equal(t, "Asia/Tokyo", upstream.lastReq.Header.Get("X-Timezone"))
+	require.Equal(t, OpenAIOutboundTimezone, upstream.lastReq.Header.Get("X-Timezone"))
 }
 
 // 透传模式的 OAuth 与非透传一致：官方客户端身份同样被强制统一为网关规范身份，

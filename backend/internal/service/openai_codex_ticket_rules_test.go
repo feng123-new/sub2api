@@ -61,7 +61,7 @@ func TestCodexTicketResponseRulesApplyToHarvestAndForwarding(t *testing.T) {
 						headers.Set(openAICodexTurnStateHeader, fakeCodexTicketState(tc.length))
 						upstream := &httpUpstreamRecorder{responses: []*http.Response{{StatusCode: status, Header: headers, Body: io.NopCloser(strings.NewReader(""))}}}
 						cfg := config.OpenAICodexTicketConfig{Enabled: true, FailClosed: true, HarvestProxyURL: "http://proxy.example:8080"}
-						svc := ticketTestService(t, cfg, upstream)
+						svc := ticketTestService(t, cfg, codexTicketValidationUpstream{upstream})
 						svc.probeOnceOpenAICodexTicket(context.Background(), account, model)
 						ticket := svc.lookupOpenAICodexTicket(account, model)
 						require.NotNil(t, ticket)
@@ -160,7 +160,7 @@ func TestCodexTicketHarvestNeverMutatesRateLimitStateButKeeps429Ticket(t *testin
 				headers.Set("X-Codex-Primary-Reset-After-Seconds", "10800")
 			}
 			upstream := &httpUpstreamRecorder{responses: []*http.Response{{StatusCode: 429, Header: headers, Body: io.NopCloser(strings.NewReader(body))}}}
-			svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://proxy.example:8080", Models: []string{"gpt-6-astra"}}, upstream)
+			svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://proxy.example:8080", Models: []string{"gpt-6-astra"}}, codexTicketValidationUpstream{upstream})
 			svc.accountRepo = repo
 			svc.refreshOpenAICodexTickets(context.Background())
 			require.NotNil(t, repo.account.RateLimitResetAt)
@@ -183,7 +183,7 @@ func TestCodexTicketQuotaPersistenceFailureDoesNotLoseTicket(t *testing.T) {
 		resp.Header.Set("X-Codex-Secondary-Reset-After-Seconds", "7200")
 		return resp, nil
 	}}
-	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://proxy.example:8080"}, upstream)
+	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://proxy.example:8080"}, codexTicketValidationUpstream{upstream})
 	svc.accountRepo = repo
 	svc.probeOnceOpenAICodexTicket(context.Background(), account, "gpt-6-astra")
 	ticket := svc.lookupOpenAICodexTicket(account, "gpt-6-astra")
@@ -193,13 +193,13 @@ func TestCodexTicketQuotaPersistenceFailureDoesNotLoseTicket(t *testing.T) {
 
 func TestCodexTicketTransient429DoesNotCreateQuotaPause(t *testing.T) {
 	account := ticketTestAccount(41)
-	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://proxy.example:8080"}, &codexTicketFuncUpstream{do: func(*http.Request) (*http.Response, error) {
+	svc := ticketTestService(t, config.OpenAICodexTicketConfig{Enabled: true, HarvestProxyURL: "http://proxy.example:8080"}, codexTicketValidationUpstream{&codexTicketFuncUpstream{do: func(*http.Request) (*http.Response, error) {
 		resp := codexTicketResponse()
 		resp.StatusCode = 429
 		resp.Header.Set("X-Codex-Secondary-Used-Percent", "25")
 		resp.Header.Set("X-Codex-Secondary-Reset-After-Seconds", "7200")
 		return resp, nil
-	}})
+	}}})
 	svc.probeOnceOpenAICodexTicket(context.Background(), account, "gpt-6-astra")
 	require.Nil(t, account.RateLimitResetAt)
 	require.False(t, openAICodexTicketQuota(account, time.Now()).paused)
@@ -215,10 +215,10 @@ func TestCodexTicketHarvesterResumesBeforeQuotaRecovery(t *testing.T) {
 	var requests atomic.Int64
 	svc := ticketTestService(t, config.OpenAICodexTicketConfig{
 		Enabled: true, HarvestProxyURL: "http://proxy.example:8080", Models: []string{"gpt-6-astra", "gpt-5.6-sol"},
-	}, &codexTicketFuncUpstream{do: func(*http.Request) (*http.Response, error) {
+	}, codexTicketValidationUpstream{&codexTicketFuncUpstream{do: func(*http.Request) (*http.Response, error) {
 		requests.Add(1)
 		return codexTicketResponse(), nil
-	}})
+	}}})
 	svc.accountRepo = repo
 	svc.refreshOpenAICodexTickets(context.Background())
 	require.Zero(t, requests.Load(), "neither model should probe before the prewarm window")

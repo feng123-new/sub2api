@@ -173,6 +173,9 @@ func TestCodexRustTransportUnixStreaming(t *testing.T) {
 	if string(data) != "data: first\n\ndata: second\n\n" || resp.ProtoMajor != 2 || resp.Header.Get("X-Codex-Rust-Upstream-Proto") != "" {
 		t.Fatalf("unexpected response: protocol=%s body=%q", resp.Proto, data)
 	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
 	records := parseCodexTransportLogs(t, logs)
 	if len(records) != 2 || records[0]["route"] != "rust" || records[0]["upstream_protocol"] != "h2" ||
 		records[0]["error_type"] != "none" || records[1]["finish_reason"] != "eof" {

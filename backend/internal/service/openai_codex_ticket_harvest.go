@@ -239,9 +239,15 @@ func (s *OpenAIGatewayService) runCodexTicketAttempt(ctx context.Context, accoun
 		a.ValidationCheckedAt = &checked
 		a.ValidationHTTPStatus = &httpStatus
 		if outcome != "remote_completed" {
+			a.Outcome, a.ReasonCode = "miss", outcome
 			return result, nil
 		}
 	}
+	// A verified ticket remains usable in this process even if the database is
+	// temporarily unavailable. Persist errors still reach the caller and logs.
+	s.openaiCodexTickets.Store(key, ticket)
+	promoted = true
+	s.scheduleCodexTicketAfterSuccess(ticket)
 	if s.accountRepo != nil {
 		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		err := s.accountRepo.UpdateExtra(writeCtx, account.ID, map[string]any{openAICodexTicketExtraKey(model): ticket, codexTicketPinPrefix + model: nil})
@@ -250,9 +256,6 @@ func (s *OpenAIGatewayService) runCodexTicketAttempt(ctx context.Context, accoun
 			return result, err
 		}
 	}
-	s.openaiCodexTickets.Store(key, ticket)
-	promoted = true
-	s.scheduleCodexTicketAfterSuccess(ticket)
 	account.Extra = maps.Clone(account.Extra)
 	if account.Extra == nil {
 		account.Extra = make(map[string]any)
