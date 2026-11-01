@@ -18,6 +18,9 @@
 
 </div>
 
+> 本分支由 `feng123-new/sub2api` 维护。该 VPS 的升级与维护从
+> [运维入口](ops/README.md)和[部署源码来源](ops/SOURCE_PROVENANCE.md)开始。
+> [历史资料索引](ops/archive/README.md)保留各记录的原始日期与适用环境。
 
 ## ⚠️ 重要提醒
 

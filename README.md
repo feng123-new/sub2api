@@ -18,9 +18,10 @@ English | [中文](README_CN.md) | [日本語](README_JA.md)
 
 </div>
 
-> This branch contains the Changlian production customizations. See
-> [docs/CHANGLIAN_MAINTENANCE.md](docs/CHANGLIAN_MAINTENANCE.md) before merging an
-> upstream release or promoting a production image.
+> This fork is maintained as `feng123-new/sub2api`. For its VPS deployment, start
+> with the [operations entrypoints](ops/README.md) and
+> [deployed source provenance](ops/SOURCE_PROVENANCE.md).
+> [Historical notes](ops/archive/README.md) retain their original dates and deployment scope.
 
 ## ⚠️ Important Notice
 
