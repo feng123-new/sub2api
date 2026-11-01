@@ -424,7 +424,8 @@ class BackupPublicationTests(unittest.TestCase):
         self.scripts.mkdir()
         (self.scripts / 'lib').mkdir()
         for name in ['backup-sub2api.sh', 'verify-backup.py', 'guarded-docker.py', 'probe.py',
-                     'README.md', 'lib/backup_state.py']:
+                     'README.md', 'lib/backup_state.py', 'SOURCE_PROVENANCE.md',
+                     'source-provenance-20261030.json']:
             shutil.copy2(OPS / name, self.scripts / name)
         shell = self.scripts / 'backup-sub2api.sh'
         source = shell.read_text()
@@ -491,6 +492,8 @@ class BackupPublicationTests(unittest.TestCase):
             self.assertIn(OVERLAY, metadata['files'])
             self.assertIn(IMAGE_ARCHIVE, metadata['files'])
             self.assertIn('runtime/deployment.json', metadata['files'])
+            self.assertIn('ops/SOURCE_PROVENANCE.md', metadata['files'])
+            self.assertIn('ops/source-provenance-20261030.json', metadata['files'])
         self.assertTrue(Path(str(latest.resolve()) + '.sha256').is_file())
         self.assertFalse(list(self.output.glob('*.partial')))
 

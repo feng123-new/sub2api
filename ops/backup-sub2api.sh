@@ -49,7 +49,9 @@ for script in backup-sub2api.sh guarded-docker.py probe.py verify-backup.py READ
   cp -a "$SCRIPT_DIR/$script" "$DEST/ops/"
 done
 cp -a "$SCRIPT_DIR/lib/backup_state.py" "$DEST/ops/lib/"
-if [ -f "$SCRIPT_DIR/REVISION" ]; then cp -a "$SCRIPT_DIR/REVISION" "$DEST/ops/"; fi
+for record in REVISION SOURCE_PROVENANCE.md source-provenance-20261030.json; do
+  if [ -f "$SCRIPT_DIR/$record" ]; then cp -a "$SCRIPT_DIR/$record" "$DEST/ops/"; fi
+done
 docker exec sub2api-postgres psql -U sub2api -d sub2api -XAt -v ON_ERROR_STOP=1 \
   -c "select key||chr(9)||coalesce(value,chr(60)||chr(110)||chr(117)||chr(108)||chr(108)||chr(62)) from settings order by key;" > "$DEST/settings.tsv"
 curl -fsS --max-time 10 http://127.0.0.1:8080/api/v1/settings/public > "$DEST/public-settings.json"

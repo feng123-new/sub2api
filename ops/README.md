@@ -89,7 +89,8 @@ Each format-3 archive contains:
   A local image may have no registry digest. Its source reference identifies
   available code, not independently verified image build provenance.
 - `data/generated-images/`, with every file referenced by the captured image index.
-- The installed public operations scripts, backup library, and `ops/REVISION` when present.
+- The installed public operations scripts, backup library, and `ops/REVISION` plus
+  source-provenance documents when present, keeping the recovery README's reference available.
 - Docker metadata and supplemental Redis persistence when available.
 
 The streaming verifier derives required Compose/image artifacts from deployment
