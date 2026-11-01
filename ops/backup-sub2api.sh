@@ -42,14 +42,14 @@ cleanup(){
 trap cleanup EXIT
 log "START backup dest=$DEST"
 cd "$DEPLOY_DIR"
-docker compose --env-file .env -f docker-compose.yml ps >/dev/null
-cp -a .env docker-compose.yml "$DEST/"
+cp -a .env "$DEST/"
 if [ -f data/config.yaml ]; then cp -a data/config.yaml "$DEST/config.yaml"; fi
 mkdir -p "$DEST/ops/lib"
 for script in backup-sub2api.sh guarded-docker.py probe.py verify-backup.py README.md; do
   cp -a "$SCRIPT_DIR/$script" "$DEST/ops/"
 done
 cp -a "$SCRIPT_DIR/lib/backup_state.py" "$DEST/ops/lib/"
+if [ -f "$SCRIPT_DIR/REVISION" ]; then cp -a "$SCRIPT_DIR/REVISION" "$DEST/ops/"; fi
 docker exec sub2api-postgres psql -U sub2api -d sub2api -XAt -v ON_ERROR_STOP=1 \
   -c "select key||chr(9)||coalesce(value,chr(60)||chr(110)||chr(117)||chr(108)||chr(108)||chr(62)) from settings order by key;" > "$DEST/settings.tsv"
 curl -fsS --max-time 10 http://127.0.0.1:8080/api/v1/settings/public > "$DEST/public-settings.json"
@@ -65,7 +65,7 @@ fi
 docker inspect sub2api sub2api-postgres sub2api-redis > "$DEST/docker-inspect.json"
 python3 "$SCRIPT_DIR/lib/backup_state.py" "$DEPLOY_DIR" "$DEST"
 tar -C "$BACKUP_ROOT" -czf "$ARCHIVE.partial" "$STAMP"
-python3 "$SCRIPT_DIR/verify-backup.py" "$ARCHIVE.partial"
+python3 "$SCRIPT_DIR/verify-backup.py" --require-deployment "$ARCHIVE.partial"
 mv "$ARCHIVE.partial" "$ARCHIVE"
 sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
 ln -s "$ARCHIVE" "$BACKUP_ROOT/latest.tar.gz.next"

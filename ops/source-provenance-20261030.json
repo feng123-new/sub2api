@@ -1,0 +1,25 @@
+{
+  "version": "0.2.19",
+  "source_commit": "eab0b311f2684465a7caba7b0177b7adb4752c40",
+  "parent_commit": "4663ccec0e96aaa0fe36f55f598d14482b58150f",
+  "upstream_tag": "v0.2.19",
+  "upstream_commit": "dece26153621959ccd7635814f4b2d08304e681a",
+  "upstream_integration": "content_snapshot",
+  "upstream_ancestor": false,
+  "upstream_merge_base": "ac1b8f1271be0d674fa6f074403c1410f30a3a81",
+  "comparison": {
+    "upstream_changed_files": 259,
+    "exact_upstream_target_files": 201,
+    "changed_with_personal_differences": 58,
+    "unchanged_at_previous_upstream_content": 0,
+    "full_semantic_equivalence_verified": false
+  },
+  "source_archive_sha256": "ce5cf4e109da1ce253cfdbe6c1b18a7ef6255d174b0113e4b25ebb3506f75b8d",
+  "source_materialization": {
+    "tracked_files_checked": 4592,
+    "archive_text_files_with_crlf_difference": 150,
+    "other_tracked_content_differences": 0,
+    "verified_embedded_frontend_files": 179,
+    "note": "Git checkout uses repository bytes; the published archive preserves exact original build inputs, including text line endings. No application rebuild was performed."
+  }
+}
