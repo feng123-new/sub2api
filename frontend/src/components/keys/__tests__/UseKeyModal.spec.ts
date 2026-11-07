@@ -618,7 +618,7 @@ describe('UseKeyModal', () => {
     expect(configToml).not.toContain('env_key')
     expect(configToml?.split('[features]\n')[1]).toContain('image_generation = true')
     expect(configToml).toContain('supports_websockets = true')
-    expect(configToml).toContain('[features]\napi_key_model_discovery = true\nresponses_websockets_v2 = true\ngoals = true')
+    expect(configToml).toContain('[features]\napi_key_model_discovery = true\nimage_generation = true\nresponses_websockets_v2 = true\ngoals = true')
     const features = configToml?.split('[features]\n')[1]?.split('\n[')[0]
     expect(features).toContain('responses_websockets_v2 = true')
     expect(features).toContain('goals = true')
