@@ -570,7 +570,7 @@ func (s *OpenAIGatewayService) commitGrokStreamingHedgeAttempt(
 		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 			maxLineSize = s.cfg.Gateway.MaxLineSize
 		}
-		resp.Body = newGrokResponsesClientToolStreamBody(resp.Body, attempt.clientToolMapping, maxLineSize)
+		resp.Body = newGrokResponsesClientToolStreamBody(resp.Body, attempt.clientToolMapping, maxLineSize, s.cfg)
 	}
 	streamResult, err := s.handleStreamingResponse(
 		ctx,
