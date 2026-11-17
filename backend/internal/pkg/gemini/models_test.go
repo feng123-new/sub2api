@@ -12,6 +12,7 @@ func TestDefaultModels_ContainsFallbackCatalogModels(t *testing.T) {
 	}
 
 	required := []string{
+		"models/gemini-4-carbon",
 		"models/gemini-3-pro-image",
 		"models/gemini-3.1-pro-preview-customtools",
 		"models/gemini-3.1-flash-image",
@@ -50,5 +51,16 @@ func TestHasFallbackModel_RecognizesGemini36Flash(t *testing.T) {
 	}
 	if !HasFallbackModel("models/gemini-3.6-flash") {
 		t.Fatalf("expected prefixed Gemini 3.6 Flash to exist in fallback catalog")
+	}
+}
+
+func TestHasFallbackModel_Carbon(t *testing.T) {
+	for _, model := range []string{"gemini-4-carbon", "models/gemini-4-carbon"} {
+		if !HasFallbackModel(model) {
+			t.Fatalf("expected Carbon fallback: %s", model)
+		}
+	}
+	if HasFallbackModel("gemini-4-carbon-preview") {
+		t.Fatal("must not invent a preview alias")
 	}
 }
