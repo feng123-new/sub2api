@@ -261,7 +261,7 @@ func TestCodexObservedClientToolTransformKeepsSourceOpenUntilOutcome(t *testing.
 	stream := `data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":1}}}` + "\n\n"
 	source := &passthroughObservedTransformSource{Reader: strings.NewReader(stream)}
 	body := newResponsesClientToolStreamBody(source,
-		apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"example": true}}, defaultMaxLineSize)
+		apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"example": true}}, defaultMaxLineSize, &config.Config{})
 	result, err := io.ReadAll(body)
 	require.NoError(t, err)
 	require.Contains(t, string(result), "response.completed")
