@@ -27,8 +27,8 @@ func TestAccount24IdentityRelationsProjection(t *testing.T) {
 			body := map[string]any{"prompt_cache_key": root, "client_metadata": cm}
 			raw, err := json.Marshal(body)
 			require.NoError(t, err)
-			require.True(t, applyCodexAccountIdentityClientMetadataMap(body, a, 1001))
-			projectedRaw, changed, err := applyCodexAccountIdentityClientMetadataRaw(raw, a, 1001)
+			require.True(t, applyCodexAccountIdentityClientMetadataMap(body, a, 1001, root))
+			projectedRaw, changed, err := applyCodexAccountIdentityClientMetadataRaw(raw, a, 1001, root)
 			require.NoError(t, err)
 			require.True(t, changed)
 			var rawBody map[string]any
@@ -83,7 +83,7 @@ func TestAccount24IdentityRelationsIsolationAndOptIn(t *testing.T) {
 	a := makeAccount(24, true)
 	require.Equal(t, scopeCodexAccountIdentityValue(a, 1, "session", raw), scopeCodexAccountIdentityValue(a, 1, "thread", raw))
 	require.NotEqual(t, scopeCodexAccountIdentityValue(a, 1, "thread", raw), scopeCodexAccountIdentityValue(a, 2, "thread", raw))
-	for _, other := range []*Account{makeAccount(24, false), makeAccount(25, true)} {
+	for _, other := range []*Account{makeAccount(24, false), makeAccount(25, false)} {
 		require.NotEqual(t, scopeCodexAccountIdentityValue(other, 1, "session", raw), scopeCodexAccountIdentityValue(other, 1, "thread", raw))
 		for _, unknown := range []string{"opaque", raw + ":bad", raw + ":-1"} {
 			require.Equal(t, scopeCodexAccountIdentityValue(makeAccount(24, false), 1, "window", unknown), scopeCodexAccountIdentityValue(a, 1, "window", unknown))
@@ -99,7 +99,7 @@ func TestAccount24IdentityRelationsIsolationAndOptIn(t *testing.T) {
 func TestAccount24IdentityRelationsOtherModesUnchanged(t *testing.T) {
 	for _, id := range []int64{24, 25} {
 		for _, mode := range []string{"off", "device", "session", "full"} {
-			if id == 24 && mode == "device" {
+			if mode == "device" {
 				continue
 			}
 			a := newTestOAuthAccount(id, map[string]any{"codex_fingerprint_mode": mode, "codex_identity_relations_v1": true})
@@ -132,7 +132,7 @@ func TestAccount24IdentityRelationsFinalRequestBuilders(t *testing.T) {
 		c.Request.Header.Set("x-codex-window-id", root+":3")
 		c.Request.Header.Set("x-codex-turn-metadata", string(embedded))
 		ids := resolveCodexFingerprintIDsFromRequest(a, c.Request.Header)
-		applyCodexAccountIdentityClientMetadataMap(body, a, 0)
+		applyCodexAccountIdentityClientMetadataMap(body, a, 0, root)
 		applyCodexFingerprintClientMetadata(body, ids)
 		stageCodexFingerprintIDs(c, ids)
 		raw, err := json.Marshal(body)

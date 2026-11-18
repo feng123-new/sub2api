@@ -68,7 +68,7 @@ func (s *OpenAIGatewayService) forward(
 	clearOpenAIResponsesNamespaceNames(c)
 	setCodexToolNameReverse(c, nil)
 	rememberOpenAIResponsesClientInstructions(c, body)
-	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account); err != nil {
+	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account, body); err != nil {
 		return nil, err
 	}
 	startTime := time.Now()
@@ -1662,6 +1662,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 
 	// 账号 namespace 不改变客户端身份基数，但确保 scheduler failover 后不会把
 	// 同一组 Codex IDs 发送给另一份 OAuth 凭据。可选指纹收敛随后仍可覆盖这些值。
+	copyCodexIdentityRelationHeaders(c, account, req.Header)
 	applyCodexAccountIdentityHeaders(req.Header, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
 
 	// 指纹收敛：使用 Forward() 中预计算的收敛 ID 改写出站头，与请求体使用同一份 IDs。

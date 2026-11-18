@@ -86,7 +86,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	// A handler may reuse the same gin context across account failover attempts.
 	// Never let an OAuth attempt's response aliases leak into the next account.
 	setCodexToolNameReverse(c, nil)
-	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account); err != nil {
+	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account, firstClientMessage); err != nil {
 		return err
 	}
 	if err := validateOpenAIWSBearerToken(account, token); err != nil {

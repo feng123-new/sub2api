@@ -107,7 +107,7 @@ func TestCodexAccountIdentitySourceResolvesShadowAndOverwritesFailoverContext(t 
 	shadow := &Account{ID: 111, ParentAccountID: &parentID, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
 	service := &OpenAIGatewayService{accountRepo: &codexAccountIdentityRepoStub{account: parent}}
 
-	resolved, err := service.prepareCodexAccountIdentitySource(context.Background(), c, shadow)
+	resolved, err := service.prepareCodexAccountIdentitySource(context.Background(), c, shadow, nil)
 	require.NoError(t, err)
 	require.Same(t, parent, resolved)
 	require.Same(t, parent, codexAccountIdentitySource(c, shadow))
@@ -124,7 +124,7 @@ func TestCodexAccountIdentitySourceResolvesShadowAndOverwritesFailoverContext(t 
 		"chatgpt_account_id": "other-account",
 		"chatgpt_user_id":    "user-2",
 	}}
-	resolved, err = service.prepareCodexAccountIdentitySource(context.Background(), c, next)
+	resolved, err = service.prepareCodexAccountIdentitySource(context.Background(), c, next, nil)
 	require.NoError(t, err)
 	require.Same(t, next, resolved)
 	require.Same(t, next, codexAccountIdentitySource(c, shadow))

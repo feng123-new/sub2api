@@ -9,7 +9,7 @@ import (
 
 func TestCodexIdentityRolloutAccounts(t *testing.T) {
 	root := "019956a0-1234-7000-8000-000000000001"
-	for _, id := range []int64{17, 19, 22, 24, 156, 157, 160} {
+	for _, id := range []int64{17, 19, 22, 24, 156, 157, 160, 7, 23, 166, 167, 171, 173, 174, 175, 177, 178, 900001} {
 		t.Run(fmt.Sprint(id), func(t *testing.T) {
 			a := newTestOAuthAccount(id, map[string]any{"codex_fingerprint_mode": "device", "codex_identity_relations_v1": true})
 			a.Credentials = map[string]any{"chatgpt_account_id": fmt.Sprintf("synthetic-%d", id)}
@@ -33,7 +33,7 @@ func TestCodexIdentityRolloutAccounts(t *testing.T) {
 		})
 	}
 	for _, id := range []int64{18, 20, 21, 25, 155, 158, 159, 161} {
-		a := newTestOAuthAccount(id, map[string]any{"codex_fingerprint_mode": "device", "codex_identity_relations_v1": true})
-		require.False(t, codexIdentityRelationsEnabled(a), "account %d must remain excluded", id)
+		a := newTestOAuthAccount(id, map[string]any{"codex_fingerprint_mode": "device", "codex_identity_relations_v1": false})
+		require.False(t, codexIdentityRelationsEnabled(a), "account %d explicitly opted out", id)
 	}
 }

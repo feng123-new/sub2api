@@ -59,7 +59,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		SetActualOpenAIUpstreamEndpoint(c, "/v1/chat/completions")
 	}
 	setCodexToolNameReverse(c, nil)
-	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account); err != nil {
+	if _, err := s.prepareCodexAccountIdentitySource(ctx, c, account, body); err != nil {
 		return nil, err
 	}
 

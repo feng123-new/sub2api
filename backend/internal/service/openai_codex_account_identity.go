@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ const codexAccountIdentitySourceContextKey = "openai_codex_account_identity_sour
 // prepareCodexAccountIdentitySource resolves credential shadows once per selected
 // attempt. The handler reuses gin.Context across failover attempts, so every entry
 // point overwrites the staged source before projecting outbound identity.
-func (s *OpenAIGatewayService) prepareCodexAccountIdentitySource(ctx context.Context, c *gin.Context, account *Account) (*Account, error) {
+func (s *OpenAIGatewayService) prepareCodexAccountIdentitySource(ctx context.Context, c *gin.Context, account *Account, body []byte) (*Account, error) {
 	source := account
 	if account != nil && account.IsShadow() {
 		resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -32,6 +33,7 @@ func (s *OpenAIGatewayService) prepareCodexAccountIdentitySource(ctx context.Con
 		}
 		source = resolved
 	}
+	source = codexIdentityRelationsSourceForRequest(source, c, body)
 	if c != nil {
 		c.Set(codexAccountIdentitySourceContextKey, source)
 	}
@@ -112,13 +114,115 @@ func codexIdentityRelationsEnabled(account *Account) bool {
 	if account == nil || account.GetCodexFingerprintMode() != codexFingerprintDevice {
 		return false
 	}
-	switch account.ID {
-	case 17, 19, 22, 24, 156, 157, 160:
-		enabled, _ := account.Extra["codex_identity_relations_v1"].(bool)
-		return enabled
-	default:
+	enabled, _ := account.Extra["codex_identity_relations_v1"].(bool)
+	return enabled
+}
+
+const codexIdentityRelationsCutoffExtraKey = "codex_identity_relations_v1_session_cutoff"
+
+// Freeze projection for the attempt. A persisted cutoff keeps old or opaque
+// session lineages on their original identities even after cache expiry/restart.
+func codexIdentityRelationsSourceForRequest(account *Account, c *gin.Context, body []byte) *Account {
+	if !codexIdentityRelationsEnabled(account) {
+		return account
+	}
+	raw, configured := account.Extra[codexIdentityRelationsCutoffExtraKey]
+	if !configured {
+		return account
+	}
+	value, valid := raw.(string)
+	cutoff, err := time.Parse(time.RFC3339Nano, value)
+	var headers http.Header
+	if c != nil && c.Request != nil {
+		headers = c.Request.Header
+	}
+	if valid && err == nil && cutoff.Nanosecond()%int(time.Millisecond) == 0 && codexIdentitySessionAfterCutoff(headers, body, cutoff) {
+		return account
+	}
+	copy := *account
+	copy.Extra = maps.Clone(account.Extra)
+	copy.Extra["codex_identity_relations_v1"] = false
+	return &copy
+}
+
+func codexIdentitySessionAfterCutoff(headers http.Header, body []byte, cutoff time.Time) bool {
+	metadata := make([]gjson.Result, 0, 3)
+	if raw := strings.TrimSpace(headers.Get(openAIWSTurnMetadataHeader)); raw != "" {
+		value := gjson.Parse(raw)
+		if !value.IsObject() {
+			return false
+		}
+		metadata = append(metadata, value)
+	}
+	if len(body) > 0 {
+		payload := openAIRequestPayloadView(body)
+		if !payload.IsObject() {
+			return false
+		}
+		if cm := payload.Get("client_metadata"); cm.Exists() {
+			if !cm.IsObject() {
+				return false
+			}
+			metadata = append(metadata, cm)
+			if embedded := cm.Get(openAIWSTurnMetadataHeader); embedded.Exists() {
+				if embedded.Type != gjson.String {
+					return false
+				}
+				if raw := strings.TrimSpace(embedded.String()); raw != "" {
+					value := gjson.Parse(raw)
+					if !value.IsObject() {
+						return false
+					}
+					metadata = append(metadata, value)
+				}
+			}
+		}
+	}
+	fields := [...]string{"session_id", "session-id", "thread_id", "thread-id", "parent_thread_id", "x-codex-parent-thread-id", "forked_from_thread_id"}
+	for _, field := range fields {
+		if value := strings.TrimSpace(headers.Get(field)); value != "" && !codexIdentityUUIDv7AtOrAfter(value, cutoff) {
+			return false
+		}
+	}
+	canonical := extractClientSessionID(headers)
+	fallback := ""
+	for _, values := range metadata {
+		for _, field := range fields {
+			value := values.Get(field)
+			if !value.Exists() {
+				continue
+			}
+			if value.Type != gjson.String {
+				return false
+			}
+			raw := strings.TrimSpace(value.String())
+			if raw == "" {
+				continue
+			}
+			if !codexIdentityUUIDv7AtOrAfter(raw, cutoff) {
+				return false
+			}
+			if canonical == "" && (field == "session_id" || field == "session-id") {
+				if fallback != "" && fallback != raw {
+					return false
+				}
+				fallback = raw
+			}
+		}
+	}
+	if canonical == "" {
+		canonical = fallback
+	}
+	return codexIdentityUUIDv7AtOrAfter(canonical, cutoff)
+}
+
+func codexIdentityUUIDv7AtOrAfter(raw string, cutoff time.Time) bool {
+	id, err := uuid.Parse(raw)
+	if err != nil || id.Version() != 7 || id.Variant() != uuid.RFC4122 {
 		return false
 	}
+	seconds, nanos := id.Time().UnixTime()
+	return !time.Unix(seconds, nanos).Before(cutoff)
 }
 
 func scopeCodexAccountIdentityValue(account *Account, apiKeyID int64, kind, raw string) string {
@@ -310,6 +414,17 @@ func applyCodexAccountIdentityClientMetadataRaw(body []byte, account *Account, a
 		}
 	}
 	return next, changed, nil
+}
+
+func copyCodexIdentityRelationHeaders(c *gin.Context, account *Account, headers http.Header) {
+	if c == nil || c.Request == nil || !codexIdentityRelationsEnabled(codexAccountIdentitySource(c, account)) {
+		return
+	}
+	for _, name := range [...]string{"session-id", "thread-id", "x-codex-parent-thread-id"} {
+		if value := c.Request.Header.Get(name); strings.TrimSpace(value) != "" {
+			headers.Set(name, value)
+		}
+	}
 }
 
 func applyCodexAccountIdentityHeaders(headers http.Header, account *Account, apiKeyID int64) {
